@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SMC Futures Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+          },
+          colors: {
+            bg: '#0b0e11', panel: '#12161c', panel2: '#181d25', line: '#232a33',
+            up: '#0ecb81', down: '#f6465d', gold: '#f0b90b', muted: '#848e9c',
+          },
+        },
+      },
+    };
+  </script>
+  <script src="https://unpkg.com/vue@3.4.38/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    [v-cloak] { display: none; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { background: #2b3139; border-radius: 3px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    @keyframes flash { 0% { background: rgba(240,185,11,.28); } 100% { background: transparent; } }
+    .flash { animation: flash 3s ease-out; }
+    .num { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="bg-bg text-gray-200 font-sans h-screen overflow-hidden antialiased">
+<div id="app" v-cloak class="h-full flex flex-col">
+
+  <!-- ═════════ Header ═════════ -->
+  <header class="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 border-b border-line bg-panel">
+    <div class="flex items-center gap-2">
+      <div class="w-7 h-7 rounded-md bg-gold/15 text-gold grid place-items-center font-bold text-sm">S</div>
+      <div class="font-semibold tracking-tight">SMC <span class="text-muted font-normal">Futures Monitor</span></div>
+    </div>
+
+    <div class="flex items-center gap-2 text-xs">
+      <span class="relative flex h-2 w-2">
+        <span v-if="wsState === 'online'" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-up opacity-60"></span>
+        <span class="relative inline-flex rounded-full h-2 w-2"
+              :class="wsState === 'online' ? 'bg-up' : wsState === 'connecting' ? 'bg-gold' : 'bg-down'"></span>
+      </span>
+      <span class="text-muted uppercase tracking-wider">{{ wsState }}</span>
+    </div>
+
+    <div class="hidden md:flex items-center gap-4 text-xs text-muted">
+      <span>Last scan: <span class="text-gray-300 font-mono">{{ status.last_scan ? fmtClock(status.last_scan) : '—' }}</span></span>
+      <span v-if="status.duration != null">({{ status.duration }}s)</span>
+      <span>{{ (status.symbols || []).length }} symbols × {{ (status.timeframes || []).join(', ') }}</span>
+      <span>Telegram: <span :class="status.telegram ? 'text-up' : 'text-down'">{{ status.telegram ? 'ON' : 'OFF' }}</span></span>
+    </div>
+
+    <div class="ml-auto flex items-center gap-2">
+      <button @click="toggleStrategy('scalp')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.scalp ? 'text-gold' : 'text-muted'">
+        {{ strategy.scalp ? '⚡ Scalp on' : '⚡ Scalp off' }}
+      </button>
+      <button @click="toggleStrategy('swing')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.swing ? 'text-gold' : 'text-muted'">
+        {{ strategy.swing ? '📈 Swing on' : '📈 Swing off' }}
+      </button>
+      <button @click="toggleStrategy('m1')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.m1 ? 'text-gold' : 'text-muted'">
+        {{ strategy.m1 ? '🎯 M1 on' : '🎯 M1 off' }}
+      </button>
+      <button @click="soundOn = !soundOn"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="soundOn ? 'text-gold' : 'text-muted'">
+        {{ soundOn ? '🔔 Sound on' : '🔕 Sound off' }}
+      </button>
+      <button @click="toggleNotify"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="notifyOn ? 'text-gold' : 'text-muted'"
+              :title="notifyPermission === 'denied' ? 'Trình duyệt đang chặn thông báo — vào cài đặt site để bật lại' : ''">
+        {{ notifyOn ? '🖥️ Alert on' : '🖥️ Alert off' }}
+      </button>
+      <button @click="sendTest" class="text-xs px-2.5 py-1.5 rounded border border-line text-muted hover:text-gray-200 hover:border-muted transition">
+        Test alert
+      </button>
+    </div>
+  </header>
+
+  <!-- ═════════ Main ═════════ -->
+  <main class="flex-1 min-h-0 flex flex-col lg:flex-row">
+
+    <!-- ── Chart panel ── -->
+    <section class="flex-1 min-w-0 flex flex-col min-h-[60vh] lg:min-h-0">
+      <div class="flex flex-wrap items-center gap-3 px-4 py-2 border-b border-line">
+        <select :value="symbol" @change="selectSymbol($event.target.value)"
+                class="bg-panel2 border border-line rounded px-2.5 py-1.5 text-sm font-semibold focus:outline-none focus:border-gold">
+          <option v-for="s in symbols" :key="s" :value="s">{{ s }}</option>
+        </select>
+
+        <form @submit.prevent="applyCustom" class="flex">
+          <input v-model="customSymbol" placeholder="Nhập coin, vd: PEPE"
+                 class="w-36 bg-panel2 border border-line rounded-l px-2.5 py-1.5 text-sm uppercase placeholder:normal-case placeholder:text-muted/70 focus:outline-none focus:border-gold" />
+          <button class="px-2.5 text-sm border border-l-0 border-line rounded-r bg-panel2 text-muted hover:text-gold">Go</button>
+        </form>
+
+        <div class="flex rounded border border-line overflow-hidden">
+          <button v-for="tf in chartTimeframes" :key="tf" @click="selectTimeframe(tf)"
+                  class="px-2.5 py-1.5 text-xs font-medium transition"
+                  :class="tf === timeframe ? 'bg-gold/15 text-gold' : 'text-muted hover:text-gray-200 hover:bg-panel2'">
+            {{ tf }}
+          </button>
+        </div>
+
+        <div class="ml-auto flex items-baseline gap-2">
+          <span class="text-xs text-muted">{{ symbol }} Perp</span>
+          <span class="font-mono text-lg num" :class="priceDir > 0 ? 'text-up' : priceDir < 0 ? 'text-down' : 'text-gray-100'">
+            {{ lastPrice != null ? fmtPrice(lastPrice) : '—' }}
+          </span>
+        </div>
+      </div>
+
+      <div class="relative flex-1 min-h-0">
+        <div ref="chartEl" class="absolute inset-0"></div>
+        <div v-if="loading" class="absolute inset-0 grid place-items-center bg-bg/60 text-sm text-muted">Đang tải dữ liệu…</div>
+        <div v-if="chartError" class="absolute top-3 left-3 text-sm bg-down/15 text-down border border-down/30 rounded px-3 py-2">{{ chartError }}</div>
+
+        <div class="absolute top-2 left-3 flex gap-3 text-[11px] text-muted pointer-events-none">
+          <span><span class="inline-block w-3 border-t border-dashed border-violet-400 align-middle mr-1"></span>CHoCH</span>
+          <span><span class="inline-block w-3 border-t border-up align-middle mr-1"></span>BoS</span>
+          <span><span class="text-gold">★</span> CHoCH + BoS</span>
+        </div>
+
+        <teleport to="body">
+          <div v-for="lb in strategyLabels" :key="lb.key"
+               class="fixed z-[9999] text-[10px] font-semibold px-1.5 py-0.5 rounded whitespace-nowrap shadow pointer-events-none"
+               :style="{ left: lb.x + 'px', top: lb.y + 'px', background: lb.bg, color: lb.fg, transform: 'translate(0, -50%)' }">
+            {{ lb.text }}
+          </div>
+        </teleport>
+      </div>
+    </section>
+
+    <!-- ── Signal panel ── -->
+    <aside class="w-full lg:w-[400px] shrink-0 flex flex-col border-t lg:border-t-0 lg:border-l border-line bg-panel min-h-0 max-h-[45vh] lg:max-h-none">
+      <div class="px-4 pt-3 pb-2 border-b border-line">
+        <div class="flex items-center gap-1 text-sm">
+          <button @click="rightTab = 'alerts'" class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
+                  :class="rightTab === 'alerts' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
+            ⚡ Alerts
+          </button>
+          <button @click="openScreenerTab"
+                  class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
+                  :class="rightTab === 'screener' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
+            🔍 Screener
+          </button>
+          <button @click="openStrategyTab"
+                  class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
+                  :class="rightTab === 'strategy' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
+            🎯 Strategy
+          </button>
+          <button @click="rightTab = 'log'"
+                  class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
+                  :class="rightTab === 'log' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
+            📊 Log
+          </button>
+        </div>
+
+        <div v-if="rightTab === 'alerts'" class="mt-2 flex items-center justify-between">
+          <div class="flex gap-1 text-xs">
+            <button v-for="f in filters" :key="f.key" @click="filter = f.key"
+                    class="px-2.5 py-1 rounded transition"
+                    :class="filter === f.key ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
+              {{ f.label }} <span class="text-muted">{{ f.count() }}</span>
+            </button>
+          </div>
+          <span class="text-xs text-muted">{{ signals.length }}</span>
+        </div>
+
+        <div v-else-if="rightTab === 'screener'" class="mt-2 flex items-center justify-between text-xs text-muted">
+          <span>
+            Coin &lt; ${{ screener.max_price ?? '0.1' }} đang tích lũy (siết BB/ATR + volume cạn + OBV tăng)
+            <br />{{ screener.updated_at ? `Cập nhật ${timeAgo(screener.updated_at)} · quét ${screener.scanned} coin` : '' }}
+          </span>
+          <button @click="loadScreener" class="shrink-0 px-2 py-1 rounded border border-line hover:border-muted hover:text-gray-200 transition"
+                  :disabled="screenerLoading">
+            {{ screenerLoading ? '…' : '↻' }}
+          </button>
+        </div>
+
+        <div v-else-if="rightTab === 'strategy'" class="mt-2 flex items-center gap-1 text-xs flex-wrap">
+          <button v-for="k in ['scalp','swing','m1']" :key="k" @click="strategyTab = k"
+                  class="px-2.5 py-1 rounded transition"
+                  :class="strategyTab === k ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
+            {{ k === 'scalp' ? 'Scalp (5m, RR 1:2)' : k === 'swing' ? 'Swing (4h, RR 1:3)' : 'M1 Entry (RR 1:2)' }}
+            <span class="text-muted">{{ strategySignals[k].length }}</span>
+          </button>
+        </div>
+
+        <div v-else class="mt-2 grid grid-cols-2 gap-2 text-xs">
+          <div v-for="(st, k) in logStats" :key="k" class="bg-panel2 rounded px-2 py-1.5">
+            <div class="text-muted capitalize">{{ k === 'all' ? 'Tất cả' : k }}</div>
+            <div class="font-mono num font-semibold" :class="st.totalR > 0 ? 'text-up' : st.totalR < 0 ? 'text-down' : 'text-gray-300'">
+              {{ st.totalR >= 0 ? '+' : '' }}{{ st.totalR.toFixed(1) }}R
+            </div>
+            <div class="text-muted">{{ st.n }} lệnh · {{ st.winrate.toFixed(0) }}% thắng</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex-1 overflow-y-auto">
+        <template v-if="rightTab === 'alerts'">
+          <div v-if="!filteredSignals.length" class="p-8 text-center text-sm text-muted">
+            <div class="text-2xl mb-2">📡</div>
+            Đang chờ tín hiệu CHoCH + BoS…<br />
+            <span class="text-xs">Tín hiệu mới sẽ xuất hiện tự động tại đây.</span>
+          </div>
+
+          <button v-for="s in filteredSignals" :key="s.id" @click="openSignal(s)"
+                  class="w-full text-left px-4 py-3 border-b border-line/70 hover:bg-panel2 transition border-l-2"
+                  :class="[
+                    selectedId === s.id ? 'bg-panel2' : '',
+                    s.direction === 'bullish' ? 'border-l-up' : 'border-l-down',
+                    flashIds[s.id] ? 'flash' : ''
+                  ]">
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-sm">{{ s.symbol }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-line text-gray-300 font-mono">{{ s.timeframe }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide"
+                    :class="s.direction === 'bullish' ? 'bg-up/15 text-up' : 'bg-down/15 text-down'">
+                {{ s.direction === 'bullish' ? '▲ BULLISH' : '▼ BEARISH' }}
+              </span>
+              <span v-if="s.test" class="text-[10px] px-1.5 py-0.5 rounded bg-gold/15 text-gold">TEST</span>
+              <span class="ml-auto text-[11px] text-muted" :title="fmtDate(s.detected_at)">{{ timeAgo(s.detected_at) }}</span>
+            </div>
+            <div class="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
+              <div><div class="text-muted">CHoCH</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.choch_level) }}</div></div>
+              <div><div class="text-muted">BoS</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.bos_level) }}</div></div>
+              <div><div class="text-muted">Close</div><div class="font-mono num" :class="s.direction === 'bullish' ? 'text-up' : 'text-down'">{{ fmtPrice(s.price) }}</div></div>
+            </div>
+            <div class="mt-1 text-[10px] text-muted">BoS candle: {{ fmtDate(s.bos_time) }}</div>
+          </button>
+        </template>
+
+        <template v-else-if="rightTab === 'screener'">
+          <div v-if="screenerLoading && !screener.results.length" class="p-8 text-center text-sm text-muted">
+            Đang quét…
+          </div>
+          <div v-else-if="!screener.results.length" class="p-8 text-center text-sm text-muted">
+            <div class="text-2xl mb-2">🔍</div>
+            Chưa có dữ liệu screener.<br />
+            <span class="text-xs">Server quét lại mỗi {{ Math.round((screener.interval_s ?? 21600) / 3600) }} giờ.</span>
+          </div>
+
+          <button v-for="(r, i) in screener.results" :key="r.symbol" @click="openScreenerRow(r)"
+                  class="w-full text-left px-4 py-2.5 border-b border-line/70 hover:bg-panel2 transition"
+                  :class="symbol === r.symbol && timeframe === '1d' ? 'bg-panel2' : ''">
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-muted w-4 shrink-0">{{ i + 1 }}</span>
+              <span class="font-semibold text-sm">{{ r.symbol }}</span>
+              <span class="font-mono num text-[11px] text-muted">{{ fmtPrice(r.price) }}</span>
+              <span class="ml-auto font-mono num text-sm text-gold font-semibold">{{ r.score }}</span>
+            </div>
+            <div class="mt-1.5 grid grid-cols-4 gap-2 text-[11px]">
+              <div :title="'Biên độ Bollinger đang thấp hơn ' + (100 - r.bb_pctile) + '% lịch sử'"><div class="text-muted">BB%ile</div><div class="font-mono num text-gray-300">{{ r.bb_pctile }}</div></div>
+              <div :title="'ATR đang thấp hơn ' + (100 - r.atr_pctile) + '% lịch sử'"><div class="text-muted">ATR%ile</div><div class="font-mono num text-gray-300">{{ r.atr_pctile }}</div></div>
+              <div title="Volume 7 ngày / 30 ngày"><div class="text-muted">Vol×</div><div class="font-mono num text-gray-300">{{ r.vol_ratio }}</div></div>
+              <div title="Điểm phân kỳ OBV vs giá (nến ngày)"><div class="text-muted">OBV-D</div><div class="font-mono num text-gray-300">{{ r.obv_div }}</div></div>
+            </div>
+            <div class="mt-1.5 grid grid-cols-3 gap-2 text-[11px] pt-1.5 border-t border-line/50">
+              <div title="Biên độ giá trong khung intraday"><div class="text-muted">Flat {{ intradayHours }}h</div><div class="font-mono num text-gray-300">{{ r.intraday_flat_pct != null ? r.intraday_flat_pct + '%' : '—' }}</div></div>
+              <div title="Volume 6 nến gần nhất / TB toàn khung"><div class="text-muted">Vol pickup</div><div class="font-mono num text-gray-300">{{ r.intraday_vol_pickup ?? '—' }}</div></div>
+              <div title="Điểm phân kỳ OBV vs giá (intraday)"><div class="text-muted">Intraday</div><div class="font-mono num text-gray-300">{{ r.intraday_score ?? '—' }}</div></div>
+            </div>
+            <div class="mt-1 text-[10px] text-muted">Đi ngang {{ r.days_in_range }} ngày (daily) · vol24h {{ fmtPrice(r.quote_volume_24h) }}</div>
+          </button>
+        </template>
+
+        <template v-else-if="rightTab === 'strategy'">
+          <div v-if="!strategySignals[strategyTab].length" class="p-8 text-center text-sm text-muted">
+            <div class="text-2xl mb-2">🎯</div>
+            Chưa có tín hiệu {{ strategyTab }}.<br />
+            <span class="text-xs">
+              {{ strategyTab === 'scalp' ? 'H4 bias → M15 OB/FVG → trigger nến M5 + lọc VWAP.'
+                 : strategyTab === 'swing' ? 'Daily bias → H4 OB/FVG → trigger nến H4 + lọc VWAP.'
+                 : '1H bias → 5M break-of-structure → chờ retest + nến xác nhận trên M1.' }}
+            </span>
+          </div>
+
+          <button v-for="s in strategySignals[strategyTab]" :key="s.id" @click="openStrategySignal(s)"
+                  class="w-full text-left px-4 py-3 border-b border-line/70 hover:bg-panel2 transition border-l-2"
+                  :class="[
+                    selectedStrategyId === s.id ? 'bg-panel2' : '',
+                    s.status === 'win' ? 'border-l-up' : s.status === 'loss' ? 'border-l-down' : 'border-l-gold'
+                  ]">
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-sm">{{ s.symbol }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-line text-gray-300 font-mono">{{ s.timeframe }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-line text-gray-300">{{ s.zone_kind }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide"
+                    :class="s.direction === 'bullish' ? 'bg-up/15 text-up' : 'bg-down/15 text-down'">
+                {{ s.direction === 'bullish' ? '▲' : '▼' }}
+              </span>
+              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide"
+                    :class="s.status === 'win' ? 'bg-up/15 text-up' : s.status === 'loss' ? 'bg-down/15 text-down' : 'bg-gold/15 text-gold'">
+                {{ s.status === 'win' ? 'LỜI' : s.status === 'loss' ? 'LỖ' : 'ĐANG MỞ' }}
+              </span>
+            </div>
+            <div class="mt-1.5 grid grid-cols-4 gap-2 text-[11px]">
+              <div><div class="text-muted">Entry</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.entry) }}</div></div>
+              <div><div class="text-muted">SL</div><div class="font-mono num text-down">{{ fmtPrice(s.sl) }}</div></div>
+              <div><div class="text-muted">TP</div><div class="font-mono num text-up">{{ fmtPrice(s.tp) }}</div></div>
+              <div><div class="text-muted">RR</div><div class="font-mono num text-gray-300">1:{{ s.rr }}</div></div>
+            </div>
+            <div class="mt-1 text-[10px] text-muted">{{ timeAgo(s.detected_at) }} · entry {{ fmtDate(s.entry_time) }}</div>
+          </button>
+        </template>
+
+        <template v-else>
+          <div v-if="!closedTrades.length" class="p-8 text-center text-sm text-muted">
+            <div class="text-2xl mb-2">📊</div>
+            Chưa có lệnh nào đóng.<br />
+            <span class="text-xs">Lệnh Scalp/Swing đã chạm TP hoặc SL sẽ hiện ở đây.</span>
+          </div>
+
+          <button v-for="s in closedTrades" :key="s.id" @click="openStrategySignal(s)"
+                  class="w-full text-left px-4 py-2.5 border-b border-line/70 hover:bg-panel2 transition border-l-2"
+                  :class="s.status === 'win' ? 'border-l-up' : 'border-l-down'">
+            <div class="flex items-center gap-2">
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-line text-gray-300 uppercase">{{ s.system }}</span>
+              <span class="font-semibold text-sm">{{ s.symbol }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-line text-gray-300 font-mono">{{ s.timeframe }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide"
+                    :class="s.direction === 'bullish' ? 'bg-up/15 text-up' : 'bg-down/15 text-down'">
+                {{ s.direction === 'bullish' ? '▲' : '▼' }}
+              </span>
+              <span class="ml-auto font-mono num text-sm font-semibold" :class="s.status === 'win' ? 'text-up' : 'text-down'">
+                {{ s.status === 'win' ? '+' + s.rr : '-1' }}R
+              </span>
+            </div>
+            <div class="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
+              <div><div class="text-muted">Entry</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.entry) }}</div></div>
+              <div><div class="text-muted">Exit</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.exit_price) }}</div></div>
+              <div><div class="text-muted">Kết quả</div>
+                <div class="font-semibold" :class="s.status === 'win' ? 'text-up' : 'text-down'">{{ s.status === 'win' ? 'LỜI' : 'LỖ' }}</div>
+              </div>
+            </div>
+            <div class="mt-1 text-[10px] text-muted">Đóng {{ fmtDate(s.exit_time ?? s.closed_at) }}</div>
+          </button>
+        </template>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<script>
+const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount } = Vue;
+
+createApp({
+  setup() {
+    // ───── Reactive state ─────
+    const chartEl = ref(null);
+    const symbols = ref(['BTCUSDT', 'ETHUSDT']);
+    const chartTimeframes = ['1m', '5m', '15m', '1h', '4h', '1d'];
+    const symbol = ref('BTCUSDT');
+    const timeframe = ref('15m');
+    const customSymbol = ref('');
+    const signals = ref([]);
+    const filter = ref('all');
+    const wsState = ref('connecting');
+    const status = ref({});
+    const lastPrice = ref(null);
+    const priceDir = ref(0);
+    const loading = ref(false);
+    const chartError = ref('');
+    const selectedId = ref(null);
+    const flashIds = reactive({});
+    const soundOn = ref(true);
+    const notifyPermission = ref(typeof Notification !== 'undefined' ? Notification.permission : 'unsupported');
+    // Trình duyệt chặn xin quyền thông báo tự động (cần user gesture) — nhưng nếu đã từng được
+    // cấp quyền (granted) từ trước rồi thì mặc định bật ngay, khỏi phải bật tay lại mỗi lần vào.
+    const notifyOn = ref(notifyPermission.value === 'granted');
+    const now = ref(Date.now());
+    const rightTab = ref('alerts');
+    const screener = ref({ updated_at: null, scanned: 0, results: [] });
+    const screenerLoading = ref(false);
+    const intradayHours = computed(() => screener.value.intraday_lookback_h ?? 48);
+    const strategy = reactive({ scalp: true, swing: true, m1: true });
+    const strategyTab = ref('scalp');
+    const strategySignals = reactive({ scalp: [], swing: [], m1: [] });
+    const closedTrades = computed(() =>
+      [...strategySignals.scalp, ...strategySignals.swing, ...strategySignals.m1]
+        .filter((s) => s.status === 'win' || s.status === 'loss')
+        .sort((a, b) => (b.exit_time ?? b.closed_at ?? 0) - (a.exit_time ?? a.closed_at ?? 0))
+    );
+    function calcStats(list) {
+      const wins = list.filter((s) => s.status === 'win').length;
+      const losses = list.filter((s) => s.status === 'loss').length;
+      const n = wins + losses;
+      const totalR = list.reduce((sum, s) => sum + (s.status === 'win' ? s.rr : -1), 0);
+      return { n, wins, losses, winrate: n ? (wins / n) * 100 : 0, totalR };
+    }
+    const logStats = computed(() => ({
+      all: calcStats(closedTrades.value),
+      scalp: calcStats(closedTrades.value.filter((s) => s.system === 'scalp')),
+      swing: calcStats(closedTrades.value.filter((s) => s.system === 'swing')),
+      m1: calcStats(closedTrades.value.filter((s) => s.system === 'm1')),
+    }));
+    const selectedStrategyId = ref(null);
+    const strategyLabels = ref([]);
+    let strategyLines = [];
+
+    // ───── Non-reactive objects (không để Vue proxy chart/websocket) ─────
+    let chart = null, candleSeries = null, levelSeries = [];
+    let sigWs = null, pingTimer = null, clockTimer = null, reconnectTimer = null;
+    let loadSeq = 0, retry = 0, audioCtx = null, structureTimer = null;
+
+    const COLORS = { up: '#0ecb81', down: '#f6465d', choch: '#a78bfa', gold: '#f0b90b' };
+
+    // ───── Formatting ─────
+    const fmtPrice = (v) => {
+      if (v == null || isNaN(v)) return '—';
+      if (v >= 1000) return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      if (v >= 1) return v.toFixed(4);
+      return Number(v.toPrecision(5)).toString();
+    };
+    // Ép cứng giờ VN (UTC+7) — không dựa vào timezone mặc định của trình duyệt vì có thể bị
+    // override (VD: DevTools Sensors) lệch khỏi giờ hệ điều hành thật.
+    const TZ = 'Asia/Ho_Chi_Minh';
+    const fmtClock = (ts) => new Date(ts * 1000).toLocaleTimeString('vi-VN', { hour12: false, timeZone: TZ });
+    const fmtDate = (ts) => new Date(ts * 1000).toLocaleString('vi-VN', { hour12: false, timeZone: TZ });
+    const timeAgo = (ts) => {
+      const s = Math.max(0, Math.floor(now.value / 1000 - ts));
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+      if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+      return `${Math.floor(s / 86400)}d ago`;
+    };
+    const pricePrecision = (p) => (p >= 1000 ? 2 : p >= 10 ? 3 : p >= 1 ? 4 : p >= 0.01 ? 5 : 7);
+
+    // ───── Signals list ─────
+    const filters = [
+      { key: 'all', label: 'All', count: () => signals.value.length },
+      { key: 'bullish', label: 'Bullish', count: () => signals.value.filter((s) => s.direction === 'bullish').length },
+      { key: 'bearish', label: 'Bearish', count: () => signals.value.filter((s) => s.direction === 'bearish').length },
+    ];
+    const filteredSignals = computed(() =>
+      filter.value === 'all' ? signals.value : signals.value.filter((s) => s.direction === filter.value)
+    );
+
+    // ───── Chart ─────
+    function initChart() {
+      chart = LightweightCharts.createChart(chartEl.value, {
+        autoSize: true,
+        layout: { background: { type: 'solid', color: '#0b0e11' }, textColor: '#848e9c', fontFamily: 'Inter, sans-serif' },
+        grid: { vertLines: { color: '#161b22' }, horzLines: { color: '#161b22' } },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: { borderColor: '#232a33' },
+        timeScale: {
+          borderColor: '#232a33', timeVisible: true, secondsVisible: false, rightOffset: 8,
+          tickMarkFormatter: (time, type) => {
+            const d = new Date(time * 1000);
+            const T = LightweightCharts.TickMarkType;
+            if (type === T.Year) return d.toLocaleDateString('en-GB', { timeZone: TZ, year: 'numeric' });
+            if (type === T.Month) return d.toLocaleDateString('en-GB', { timeZone: TZ, month: 'short', year: '2-digit' });
+            if (type === T.DayOfMonth) return d.toLocaleDateString('en-GB', { timeZone: TZ, day: '2-digit', month: 'short' });
+            return d.toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
+          },
+        },
+        localization: {
+          timeFormatter: (time) => new Date(time * 1000).toLocaleString('en-GB', {
+            timeZone: TZ, day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+          }),
+        },
+      });
+      candleSeries = chart.addCandlestickSeries({
+        upColor: COLORS.up, downColor: COLORS.down, borderVisible: false,
+        wickUpColor: COLORS.up, wickDownColor: COLORS.down,
+      });
+      // Pan/zoom/resize làm lệch toạ độ pixel của nhãn TP/Entry/SL -> tính lại theo thời gian thực
+      const reposition = () => {
+        if (selectedStrategyId.value) {
+          const sig = findStrategySignal(selectedStrategyId.value);
+          if (sig) positionStrategyLabels(sig);
+        }
+      };
+      chart.timeScale().subscribeVisibleLogicalRangeChange(reposition);
+      new ResizeObserver(reposition).observe(chartEl.value);
+    }
+
+    function drawStructure(events, sigs) {
+      levelSeries.forEach((s) => chart.removeSeries(s));
+      levelSeries = [];
+
+      const sigKeys = new Set();
+      sigs.forEach((s) => { sigKeys.add(`CHoCH_${s.choch_time}_${s.dir}`); sigKeys.add(`BoS_${s.bos_time}_${s.dir}`); });
+
+      const markers = [];
+      events.forEach((e, i) => {
+        const bull = e.dir > 0;
+        const isSig = sigKeys.has(`${e.type}_${e.time}_${e.dir}`);
+        const color = e.type === 'CHoCH' ? COLORS.choch : bull ? COLORS.up : COLORS.down;
+
+        // Đường level từ swing -> nến phá vỡ (chỉ vẽ 20 sự kiện cuối cho nhẹ)
+        if (i >= events.length - 20 && e.swing_time < e.time) {
+          const line = chart.addLineSeries({
+            color, lineWidth: isSig ? 2 : 1,
+            lineStyle: e.type === 'CHoCH' ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+          });
+          line.setData([{ time: e.swing_time, value: e.level }, { time: e.time, value: e.level }]);
+          levelSeries.push(line);
+        }
+        markers.push({
+          time: e.time,
+          position: bull ? 'belowBar' : 'aboveBar',
+          color: isSig ? COLORS.gold : color,
+          shape: bull ? 'arrowUp' : 'arrowDown',
+          text: isSig ? `${e.type} ★` : e.type,
+        });
+      });
+      markers.sort((a, b) => a.time - b.time);
+      candleSeries.setMarkers(markers);
+    }
+
+    async function fetchKlines() {
+      const r = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol.value)}&timeframe=${timeframe.value}&limit=500`);
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || r.statusText);
+      return data;
+    }
+
+    async function loadChart({ focusTime = null } = {}) {
+      const seq = ++loadSeq;
+      loading.value = true;
+      chartError.value = '';
+      try {
+        const d = await fetchKlines();
+        if (seq !== loadSeq) return; // đã chuyển coin khác trong lúc chờ
+        const last = d.candles.at(-1)?.close ?? 1;
+        const precision = pricePrecision(last);
+        candleSeries.applyOptions({ priceFormat: { type: 'price', precision, minMove: 1 / 10 ** precision } });
+        candleSeries.setData(d.candles);
+        drawStructure(d.events, d.signals);
+        // Kéo tay trục giá ở coin trước có thể đã tắt autoScale — luôn bật lại khi đổi coin/timeframe
+        chart.priceScale('right').applyOptions({ autoScale: true });
+        lastPrice.value = d.candles.at(-1)?.close ?? null;
+        lastKlineTime = d.candles.at(-1)?.time ?? null;
+        priceDir.value = 0;
+
+        const n = d.candles.length;
+        let idx = focusTime ? d.candles.findIndex((c) => c.time >= focusTime) : -1;
+        if (idx >= 0) chart.timeScale().setVisibleLogicalRange({ from: idx - 100, to: idx + 30 });
+        else chart.timeScale().setVisibleLogicalRange({ from: n - 160, to: n + 8 });
+
+        sendWatch();
+
+        // Đường Entry/SL/TP là mức giá cố định, không phụ thuộc timeframe — giữ nguyên khi đổi
+        // timeframe trên CÙNG coin, chỉ xoá khi chuyển sang coin khác.
+        const sig = selectedStrategyId.value ? findStrategySignal(selectedStrategyId.value) : null;
+        if (sig && sig.symbol === symbol.value) drawStrategyLines(sig);
+        else { clearStrategyLines(); selectedStrategyId.value = null; }
+      } catch (e) {
+        if (seq === loadSeq) chartError.value = `Lỗi tải chart: ${e.message}`;
+      } finally {
+        if (seq === loadSeq) loading.value = false;
+      }
+    }
+
+    // Làm mới CHoCH/BoS khi 1 nến đóng (không đụng tới view hiện tại)
+    function refreshStructureSoon() {
+      clearTimeout(structureTimer);
+      structureTimer = setTimeout(async () => {
+        const seq = loadSeq;
+        try {
+          const d = await fetchKlines();
+          if (seq === loadSeq) drawStructure(d.events, d.signals);
+        } catch {}
+      }, 3000);
+    }
+
+    // ───── Nến live: nhờ backend đẩy qua /ws (thay vì browser tự kết nối thẳng Binance —
+    // một số mạng/ISP/AV chặn ngầm luồng dữ liệu WebSocket dù bắt tay vẫn "thành công") ─────
+    let lastKlineTime = null, lastBoxRedrawAt = 0;
+    function sendWatch() {
+      if (sigWs && sigWs.readyState === 1) {
+        sigWs.send(JSON.stringify({ action: 'watch', symbol: symbol.value, timeframe: timeframe.value }));
+      }
+    }
+    function handleKlineMsg(msg) {
+      if (msg.symbol !== symbol.value || msg.timeframe !== timeframe.value) return;
+      for (const c of msg.candles) {
+        try { candleSeries.update(c); } catch {}
+        if (lastKlineTime != null && c.time > lastKlineTime) refreshStructureSoon();
+        lastKlineTime = c.time;
+        if (lastPrice.value != null && c.close !== lastPrice.value) priceDir.value = Math.sign(c.close - lastPrice.value);
+        lastPrice.value = c.close;
+      }
+      // Tín hiệu strategy còn đang mở -> cạnh phải khung TP/SL "lớn dần" theo thời gian thực
+      // (throttle 2s/lần — vẽ lại toàn bộ series mỗi tick kline vừa tốn vừa dễ ra timing bug)
+      if (selectedStrategyId.value && Date.now() - lastBoxRedrawAt > 2000) {
+        const sig = findStrategySignal(selectedStrategyId.value);
+        if (sig && sig.symbol === symbol.value && sig.status === 'open') {
+          lastBoxRedrawAt = Date.now();
+          drawStrategyLines(sig);
+        }
+      }
+    }
+
+    // ───── Controls ─────
+    function ensureSymbol(s) {
+      if (!symbols.value.includes(s)) symbols.value = [...symbols.value, s].sort();
+    }
+    function selectSymbol(s) {
+      ensureSymbol(s);
+      symbol.value = s;
+      selectedId.value = null;
+      loadChart();
+    }
+    function selectTimeframe(tf) {
+      timeframe.value = tf;
+      selectedId.value = null;
+      loadChart();
+    }
+    function applyCustom() {
+      let s = customSymbol.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!s) return;
+      if (!s.endsWith('USDT') && !s.endsWith('USDC')) s += 'USDT';
+      customSymbol.value = '';
+      selectSymbol(s);
+    }
+    function openSignal(sig) {
+      selectedId.value = sig.id;
+      ensureSymbol(sig.symbol);
+      symbol.value = sig.symbol;
+      timeframe.value = sig.timeframe;
+      loadChart({ focusTime: sig.bos_time });
+    }
+    async function sendTest() {
+      await fetch(`/api/test-signal?symbol=${symbol.value}&timeframe=${timeframe.value}`, { method: 'POST' });
+    }
+
+    async function loadScreener() {
+      screenerLoading.value = true;
+      try {
+        screener.value = await (await fetch('/api/screener')).json();
+      } catch {}
+      finally { screenerLoading.value = false; }
+    }
+    function openScreenerTab() {
+      rightTab.value = 'screener';
+      loadScreener();
+    }
+    function openScreenerRow(row) {
+      ensureSymbol(row.symbol);
+      symbol.value = row.symbol;
+      timeframe.value = '1d';
+      selectedId.value = null;
+      loadChart();
+    }
+
+    async function toggleStrategy(system) {
+      const next = !strategy[system];
+      try {
+        await fetch(`/api/strategy/toggle?system=${system}&enabled=${next}`, { method: 'POST' });
+        strategy[system] = next;
+      } catch {}
+    }
+    function openStrategyTab() { rightTab.value = 'strategy'; }
+
+    function findStrategySignal(id) {
+      return strategySignals.scalp.find((x) => x.id === id) || strategySignals.swing.find((x) => x.id === id)
+        || strategySignals.m1.find((x) => x.id === id) || null;
+    }
+    function clearStrategyLines() {
+      strategyLines.forEach((l) => { try { chart.removeSeries(l); } catch {} });
+      strategyLines = [];
+      strategyLabels.value = [];
+    }
+    // Nhãn TP/Entry/SL đặt đúng tại cạnh trái của khung (toạ độ pixel thật trên canvas),
+    // không dùng createPriceLine (label đó luôn dính cứng bên trục phải).
+    // Label teleport ra <body> với position:fixed theo toạ độ viewport thật — chart nằm trong
+    // 1 stacking/containing context nào đó khiến position:absolute lồng bên trong bị lệch/ẩn,
+    // đã xác nhận bằng marker debug (fixed + gắn thẳng vào body thì hiện đúng vị trí).
+    function positionStrategyLabels(s) {
+      if (!s || !chart || !candleSeries) { strategyLabels.value = []; return; }
+      const x = chart.timeScale().timeToCoordinate(s.entry_time);
+      if (x == null) { strategyLabels.value = []; return; }
+      const rect = chartEl.value.getBoundingClientRect();
+      const bull = s.direction === 'bullish';
+      const pct = (p) => (bull ? (p - s.entry) / s.entry : (s.entry - p) / s.entry) * 100;
+      const statusText = s.status === 'win' ? 'LỜI' : s.status === 'loss' ? 'LỖ' : 'ĐANG MỞ';
+      const rows = [
+        { key: 'tp', price: s.tp, bg: COLORS.up, fg: '#06251b',
+          text: `TP ${pct(s.tp) >= 0 ? '+' : ''}${pct(s.tp).toFixed(1)}% · ${fmtPrice(s.tp)}` },
+        { key: 'entry', price: s.entry, bg: COLORS.gold, fg: '#2b2200',
+          text: `Entry · RR 1:${s.rr} · ${statusText}` },
+        { key: 'sl', price: s.sl, bg: COLORS.down, fg: '#2b0b0f',
+          text: `SL ${pct(s.sl).toFixed(1)}% · ${fmtPrice(s.sl)}` },
+      ];
+      strategyLabels.value = rows
+        .map((r) => {
+          const y = candleSeries.priceToCoordinate(r.price);
+          return y == null ? null : { ...r, x: rect.left + x + 4, y: rect.top + y };
+        })
+        .filter(Boolean);
+    }
+    // Kiểu "Long/Short Position Tool" của TradingView: khối XANH tô đặc từ entry lên TP,
+    // khối ĐỎ tô đặc từ SL lên entry, giới hạn theo chiều ngang từ giờ vào lệnh (giờ ĐÓNG nến
+    // trigger) -> giờ chạm TP/SL (hoặc hiện tại nếu còn mở). Dùng BaselineSeries baseValue=entry.
+    function drawStrategyLines(s) {
+      clearStrategyLines();
+      const t0 = s.entry_time;
+      // Độ rộng tối thiểu = 1 nến của khung tín hiệu — nếu TP/SL chạm ngay ở nến kế tiếp thì
+      // exit_time gần bằng entry_time, khung sẽ bị nén thành 1 vạch mỏng nếu không có mức sàn này.
+      // Nhưng KHÔNG được vượt quá hiện tại — nếu không, cạnh phải sẽ bị đẩy vào vùng "tương lai"
+      // (nến của khung tín hiệu — VD 4h — có thể chưa đóng xong ở thời điểm thực tế hiện tại).
+      const TF_SEC = { '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+      const minWidth = TF_SEC[s.timeframe] || 300;
+      const now = Math.floor(Date.now() / 1000);
+      const t1 = Math.min(Math.max(t0 + minWidth, s.exit_time ?? now), now);
+
+      const targetBox = chart.addBaselineSeries({
+        baseValue: { type: 'price', price: s.entry },
+        topFillColor1: 'rgba(14,203,129,0.28)', topFillColor2: 'rgba(14,203,129,0.05)', topLineColor: COLORS.up,
+        bottomFillColor1: 'rgba(0,0,0,0)', bottomFillColor2: 'rgba(0,0,0,0)', bottomLineColor: 'rgba(0,0,0,0)',
+        lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+      targetBox.setData([{ time: t0, value: s.tp }, { time: t1, value: s.tp }]);
+
+      const stopBox = chart.addBaselineSeries({
+        baseValue: { type: 'price', price: s.entry },
+        topFillColor1: 'rgba(0,0,0,0)', topFillColor2: 'rgba(0,0,0,0)', topLineColor: 'rgba(0,0,0,0)',
+        bottomFillColor1: 'rgba(246,70,93,0.05)', bottomFillColor2: 'rgba(246,70,93,0.28)', bottomLineColor: COLORS.down,
+        lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+      stopBox.setData([{ time: t0, value: s.sl }, { time: t1, value: s.sl }]);
+      strategyLines = [targetBox, stopBox];
+
+      // rAF: đợi chart render xong 1 frame rồi mới đọc toạ độ pixel, tránh timeToCoordinate/
+      // priceToCoordinate trả về null vì đọc ngay lúc series vừa setData chưa kịp cập nhật layout.
+      requestAnimationFrame(() => positionStrategyLabels(s));
+    }
+    async function openStrategySignal(s) {
+      ensureSymbol(s.symbol);
+      symbol.value = s.symbol;
+      timeframe.value = s.timeframe;
+      await loadChart({ focusTime: s.entry_time });
+      selectedStrategyId.value = s.id;
+      drawStrategyLines(s);
+    }
+    function upsertStrategySignal(s) {
+      const list = strategySignals[s.system];
+      if (!list) return;
+      const i = list.findIndex((x) => x.id === s.id);
+      if (i >= 0) list[i] = s; else list.unshift(s);
+      if (selectedStrategyId.value === s.id) drawStrategyLines(s);
+    }
+
+    function beep(bull) {
+      if (!soundOn.value) return;
+      try {
+        audioCtx ||= new AudioContext();
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain(), t = audioCtx.currentTime;
+        o.frequency.value = bull ? 880 : 440;
+        g.gain.setValueAtTime(0.08, t);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+        o.connect(g).connect(audioCtx.destination);
+        o.start(t); o.stop(t + 0.4);
+      } catch {}
+    }
+
+    async function toggleNotify() {
+      if (notifyOn.value) { notifyOn.value = false; return; }
+      if (typeof Notification === 'undefined') { alert('Trình duyệt này không hỗ trợ thông báo desktop.'); return; }
+      let perm = Notification.permission;
+      if (perm === 'default') perm = await Notification.requestPermission();
+      notifyPermission.value = perm;
+      if (perm !== 'granted') { alert('Bạn cần cho phép quyền thông báo trong trình duyệt để bật tính năng này.'); return; }
+      notifyOn.value = true;
+    }
+
+    function notifyDesktop(sig) {
+      if (!notifyOn.value || Notification.permission !== 'granted') return;
+      try {
+        const bull = sig.direction === 'bullish';
+        const n = new Notification(`${sig.symbol} ${sig.timeframe} · ${bull ? '📈 Bullish' : '📉 Bearish'} CHoCH→BoS`, {
+          body: `Giá: ${fmtPrice(sig.price)}`,
+          tag: sig.id,
+          silent: true, // đã có âm báo riêng qua beep()
+        });
+        n.onclick = () => { window.focus(); openSignal(sig); n.close(); };
+      } catch {}
+    }
+    function notifyStrategyDesktop(sig) {
+      if (!notifyOn.value || Notification.permission !== 'granted') return;
+      try {
+        const bull = sig.direction === 'bullish';
+        const sysLabel = sig.system === 'scalp' ? '⚡ Scalp' : sig.system === 'swing' ? '📈 Swing' : '🎯 M1';
+        const n = new Notification(
+          `${sysLabel} · ${sig.symbol} ${sig.timeframe} · ${bull ? '▲ Bullish' : '▼ Bearish'}`,
+          {
+            body: `Entry ${fmtPrice(sig.entry)} · SL ${fmtPrice(sig.sl)} · TP ${fmtPrice(sig.tp)} · RR 1:${sig.rr}`,
+            tag: sig.id,
+            silent: true, // đã có âm báo riêng qua beep()
+          },
+        );
+        n.onclick = () => { window.focus(); openStrategySignal(sig); n.close(); };
+      } catch {}
+    }
+
+    // ───── Backend signal WebSocket ─────
+    function connectSignals() {
+      wsState.value = 'connecting';
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+      sigWs = ws;
+
+      ws.onopen = () => {
+        wsState.value = 'online';
+        retry = 0;
+        pingTimer = setInterval(() => ws.readyState === 1 && ws.send('ping'), 25000);
+        sendWatch();
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'history') {
+          signals.value = msg.data;
+        } else if (msg.type === 'status') {
+          status.value = msg.data;
+          (msg.data.symbols || []).forEach(ensureSymbol);
+          if (msg.data.strategy_enabled) Object.assign(strategy, msg.data.strategy_enabled);
+        } else if (msg.type === 'signal') {
+          const s = msg.data;
+          if (signals.value.some((x) => x.id === s.id)) return;
+          signals.value = [s, ...signals.value].slice(0, 200);
+          flashIds[s.id] = true;
+          setTimeout(() => delete flashIds[s.id], 3000);
+          beep(s.direction === 'bullish');
+          notifyDesktop(s);
+          if (s.symbol === symbol.value && s.timeframe === timeframe.value) refreshStructureSoon();
+        } else if (msg.type === 'kline') {
+          handleKlineMsg(msg);
+        } else if (msg.type === 'strategy_history') {
+          strategySignals.scalp = msg.data.scalp || [];
+          strategySignals.swing = msg.data.swing || [];
+          strategySignals.m1 = msg.data.m1 || [];
+        } else if (msg.type === 'strategy_signal') {
+          upsertStrategySignal(msg.data);
+          beep(msg.data.direction === 'bullish');
+          notifyStrategyDesktop(msg.data);
+        } else if (msg.type === 'strategy_update') {
+          upsertStrategySignal(msg.data);
+        }
+      };
+      ws.onclose = () => {
+        clearInterval(pingTimer);
+        if (sigWs !== ws) return;
+        wsState.value = 'offline';
+        reconnectTimer = setTimeout(connectSignals, Math.min(30000, 1000 * 2 ** retry++));
+      };
+    }
+
+    // ───── Lifecycle ─────
+    onMounted(async () => {
+      initChart();
+      try {
+        const cfg = await (await fetch('/api/config')).json();
+        status.value = cfg;
+        if (cfg.symbols?.length) {
+          symbols.value = [...cfg.symbols];
+          symbol.value = cfg.symbols[0];
+        }
+        if (cfg.timeframes?.length) timeframe.value = cfg.timeframes[0];
+      } catch {}
+      loadChart();
+      connectSignals();
+      loadScreener();
+      clockTimer = setInterval(() => (now.value = Date.now()), 15000);
+    });
+
+    onBeforeUnmount(() => {
+      const ws = sigWs; sigWs = null; ws?.close();
+      [pingTimer, clockTimer].forEach(clearInterval);
+      [reconnectTimer, structureTimer].forEach(clearTimeout);
+      chart?.remove();
+    });
+
+    return {
+      chartEl, symbols, chartTimeframes, symbol, timeframe, customSymbol, signals, filter, filters,
+      filteredSignals, wsState, status, lastPrice, priceDir, loading, chartError, selectedId, flashIds, soundOn,
+      notifyOn, notifyPermission, rightTab, screener, screenerLoading, intradayHours,
+      strategy, strategyTab, strategySignals, selectedStrategyId, strategyLabels, closedTrades, logStats,
+      fmtPrice, fmtClock, fmtDate, timeAgo,
+      selectSymbol, selectTimeframe, applyCustom, openSignal, sendTest, toggleNotify,
+      openScreenerTab, openScreenerRow, loadScreener,
+      toggleStrategy, openStrategyTab, openStrategySignal,
+    };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>
