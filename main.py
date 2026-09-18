@@ -93,6 +93,13 @@ M1_RETEST_WINDOW_MIN = int(os.getenv("M1_RETEST_WINDOW_MIN", "300"))
 M1_RETEST_TOLERANCE = float(os.getenv("M1_RETEST_TOLERANCE", "0.0015"))
 M1_SL_BUFFER = float(os.getenv("M1_SL_BUFFER", "0.0015"))
 
+# NR7 H1 — phá vỡ nến co hẹp nhất 7 nến trên khung H1. Backtest 3 năm/16 coin: edge dương mỏng nhưng nhất quán
+# (RR 1:5 ~ +0.07R, RR 1:8 ~ +0.11R gross), thắng chỉ ~18% (RR5) / ~12% (RR8) nên phải chịu được chuỗi thua dài.
+NR7_RR = float(os.getenv("NR7_RR", "5"))
+NR7_INTERVAL = int(os.getenv("NR7_INTERVAL", "120"))
+NR7_MIN_RISK = float(os.getenv("NR7_MIN_RISK", "0.003"))
+NR7_MAX_RISK = float(os.getenv("NR7_MAX_RISK", "0.06"))
+
 ALLOWED_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
 TF_SECONDS = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
               "2h": 7200, "4h": 14400, "6h": 21600, "12h": 43200, "1d": 86400}
@@ -115,8 +122,8 @@ screener_state: dict = {
     "max_price": SCREENER_MAX_PRICE, "interval_s": SCREENER_INTERVAL,
     "intraday_lookback_h": SCREENER_INTRADAY_LOOKBACK,
 }
-strategy_enabled: dict = {"scalp": True, "swing": True, "m1": True}
-strategy_signals: dict[str, deque] = {"scalp": deque(maxlen=100), "swing": deque(maxlen=100), "m1": deque(maxlen=100)}
+strategy_enabled: dict = {"scalp": True, "swing": True, "m1": True, "nr7": True}
+strategy_signals: dict[str, deque] = {"scalp": deque(maxlen=100), "swing": deque(maxlen=100), "m1": deque(maxlen=100), "nr7": deque(maxlen=100)}
 strategy_seen: set[str] = set()
 
 
@@ -576,9 +583,22 @@ def strat_candle_patterns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def strat_bias_series(ohlc: pd.DataFrame, swing_length: int) -> pd.Series:
+    """Bias = hướng của cú phá cấu trúc (BoS/CHoCH) GẦN NHẤT ĐÃ XẢY RA. smc.bos_choch ghi tín hiệu tại
+    index của swing gốc chứ không phải nến phá vỡ — ffill trực tiếp sẽ 'nhìn trước' các cú phá về sau
+    (đã làm backtest cũ phóng đại), nên ở đây đặt bias tại BrokenIndex. Bỏ nến cuối (đang chạy)."""
+    ohlc = ohlc.iloc[:-1].reset_index(drop=True)
     swings = smc.swing_highs_lows(ohlc, swing_length=swing_length)
     struct = smc.bos_choch(ohlc, swings, close_break=True)
-    return struct["BOS"].fillna(struct["CHOCH"]).ffill()
+    arr = np.full(len(ohlc), np.nan)
+    events = []
+    for i, row in struct.iterrows():
+        d = row["BOS"] if pd.notna(row["BOS"]) else row["CHOCH"]
+        if pd.notna(d) and d != 0 and pd.notna(row["BrokenIndex"]):
+            events.append((int(row["BrokenIndex"]), i, d))
+    for j, _, d in sorted(events):
+        if j < len(arr):
+            arr[j] = d
+    return pd.Series(arr).ffill()
 
 
 def strat_build_zones(ohlc: pd.DataFrame, swing_length: int) -> pd.DataFrame:
@@ -814,6 +834,39 @@ def check_m1_signal(symbol: str, h1: pd.DataFrame, m5: pd.DataFrame, m1: pd.Data
     }
 
 
+def check_nr7_signal(symbol: str, h1: pd.DataFrame) -> dict | None:
+    """Nến k có biên độ nhỏ nhất 7 nến (NR7); nến kế tiếp i đóng cửa phá đỉnh/đáy nến k -> vào lệnh tại giá đóng
+    nến i, SL ở đầu kia của nến NR7. Chỉ dùng nến đã đóng. Đúng định nghĩa đã backtest."""
+    d = h1.iloc[:-1].reset_index(drop=True)  # bỏ nến H1 đang chạy
+    if len(d) < 70:
+        return None
+    i, k = len(d) - 1, len(d) - 2
+    rng = (d["high"] - d["low"]).to_numpy(float)
+    if rng[k] > rng[k - 6:k + 1].min():
+        return None
+    hk, lk, c = float(d["high"].iloc[k]), float(d["low"].iloc[k]), float(d["close"].iloc[i])
+    if c > hk:
+        direction, sl = 1, lk * 0.999
+    elif c < lk:
+        direction, sl = -1, hk * 1.001
+    else:
+        return None
+    risk = abs(c - sl)
+    if risk / c < NR7_MIN_RISK or risk / c > NR7_MAX_RISK or (direction > 0 and sl >= c) or (direction < 0 and sl <= c):
+        return None
+    tp = c + NR7_RR * risk if direction > 0 else c - NR7_RR * risk
+    entry_time = int(d["ts"].iloc[i]) + TF_SECONDS["1h"]  # giờ đóng nến phá vỡ = lúc entry thực sự xác nhận
+    status, exit_time, exit_price = resolve_outcome(h1, entry_time, sl, tp, direction > 0)
+    return {
+        "id": f"nr7-{symbol}-{entry_time}-{direction}", "system": "nr7", "symbol": symbol, "timeframe": "1h",
+        "direction": "bullish" if direction > 0 else "bearish", "zone_kind": "NR7",
+        "entry": c, "sl": sl, "tp": tp, "rr": NR7_RR, "entry_time": entry_time,
+        "detected_at": int(time.time()), "status": status,
+        "closed_at": int(time.time()) if status != "open" else None,
+        "exit_time": exit_time, "exit_price": exit_price,
+    }
+
+
 def has_open_signal(system: str, symbol: str) -> bool:
     """Mỗi symbol chỉ giữ 1 lệnh mở/hệ thống tại 1 thời điểm — tránh bắn tín hiệu trùng khi
     điều kiện entry vẫn còn đúng ở nhiều nến liên tiếp (VD nhiều nến xác nhận sát nhau)."""
@@ -917,6 +970,40 @@ async def scan_m1_symbol(symbol: str, sem: asyncio.Semaphore):
         await manager.broadcast({"type": "strategy_signal", "data": sig})
 
 
+async def scan_nr7_symbol(symbol: str, sem: asyncio.Semaphore):
+    async with sem:
+        try:
+            h1 = await fetch_ohlc(symbol, "1h", 500)  # 500 nến ~ 20 ngày: đủ để theo dõi lệnh mở lâu (RR cao)
+        except Exception:
+            return
+    await update_open_signals("nr7", symbol, h1)
+    try:
+        sig = await asyncio.to_thread(check_nr7_signal, symbol, h1)
+    except Exception:
+        log.exception("check_nr7_signal lỗi %s", symbol)
+        return
+    if sig and sig["id"] not in strategy_seen and not has_open_signal("nr7", symbol):
+        strategy_seen.add(sig["id"])
+        strategy_signals["nr7"].appendleft(sig)
+        save_strategy_state()
+        log.info("NR7 %s %s @ %s (SL %s / TP %s)", symbol, sig["direction"], sig["entry"], sig["sl"], sig["tp"])
+        await manager.broadcast({"type": "strategy_signal", "data": sig})
+
+
+async def nr7_loop():
+    sem = asyncio.Semaphore(CONCURRENCY)
+    while True:
+        t0 = time.time()
+        if strategy_enabled["nr7"]:
+            try:
+                await asyncio.gather(*(scan_nr7_symbol(s, sem) for s in active_symbols), return_exceptions=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("NR7 loop lỗi")
+        await asyncio.sleep(max(30.0, NR7_INTERVAL - (time.time() - t0)))
+
+
 async def m1_loop():
     sem = asyncio.Semaphore(CONCURRENCY)
     while True:
@@ -982,7 +1069,8 @@ async def lifespan(app: FastAPI):
              "ON" if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID else "OFF")
     tasks = [asyncio.create_task(scanner_loop()), asyncio.create_task(screener_loop()),
              asyncio.create_task(kline_relay_loop()), asyncio.create_task(scalp_loop()),
-             asyncio.create_task(swing_loop()), asyncio.create_task(m1_loop())]
+             asyncio.create_task(swing_loop()), asyncio.create_task(m1_loop()),
+             asyncio.create_task(nr7_loop())]
     yield
     for task in tasks:
         task.cancel()
@@ -1021,7 +1109,7 @@ async def get_screener():
 async def get_strategy_signals(system: str = Query("scalp")):
     if system not in strategy_signals:
         raise HTTPException(400, f"system không hợp lệ: {system}")
-    rr = {"scalp": SCALP_RR, "swing": SWING_RR, "m1": M1_RR}[system]
+    rr = {"scalp": SCALP_RR, "swing": SWING_RR, "m1": M1_RR, "nr7": NR7_RR}[system]
     return {"enabled": strategy_enabled[system], "rr": rr, "signals": list(strategy_signals[system])}
 
 

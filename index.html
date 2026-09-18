@@ -77,6 +77,11 @@
               :class="strategy.m1 ? 'text-gold' : 'text-muted'">
         {{ strategy.m1 ? '🎯 M1 on' : '🎯 M1 off' }}
       </button>
+      <button @click="toggleStrategy('nr7')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.nr7 ? 'text-gold' : 'text-muted'">
+        {{ strategy.nr7 ? '📐 NR7 on' : '📐 NR7 off' }}
+      </button>
       <button @click="soundOn = !soundOn"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
               :class="soundOn ? 'text-gold' : 'text-muted'">
@@ -196,15 +201,15 @@
         </div>
 
         <div v-else-if="rightTab === 'strategy'" class="mt-2 flex items-center gap-1 text-xs flex-wrap">
-          <button v-for="k in ['scalp','swing','m1']" :key="k" @click="strategyTab = k"
+          <button v-for="k in ['scalp','swing','m1','nr7']" :key="k" @click="strategyTab = k"
                   class="px-2.5 py-1 rounded transition"
                   :class="strategyTab === k ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
-            {{ k === 'scalp' ? 'Scalp (5m, RR 1:2)' : k === 'swing' ? 'Swing (4h, RR 1:3)' : 'M1 Entry (RR 1:2)' }}
+            {{ k === 'scalp' ? 'Scalp (5m, RR 1:2)' : k === 'swing' ? 'Swing (4h, RR 1:3)' : k === 'm1' ? 'M1 Entry (RR 1:2)' : 'NR7 H1 (RR 1:5)' }}
             <span class="text-muted">{{ strategySignals[k].length }}</span>
           </button>
         </div>
 
-        <div v-else class="mt-2 grid grid-cols-2 gap-2 text-xs">
+        <div v-else class="mt-2 grid grid-cols-3 gap-2 text-xs">
           <div v-for="(st, k) in logStats" :key="k" class="bg-panel2 rounded px-2 py-1.5">
             <div class="text-muted capitalize">{{ k === 'all' ? 'Tất cả' : k }}</div>
             <div class="font-mono num font-semibold" :class="st.totalR > 0 ? 'text-up' : st.totalR < 0 ? 'text-down' : 'text-gray-300'">
@@ -290,7 +295,8 @@
             <span class="text-xs">
               {{ strategyTab === 'scalp' ? 'H4 bias → M15 OB/FVG → trigger nến M5 + lọc VWAP.'
                  : strategyTab === 'swing' ? 'Daily bias → H4 OB/FVG → trigger nến H4 + lọc VWAP.'
-                 : '1H bias → 5M break-of-structure → chờ retest + nến xác nhận trên M1.' }}
+                 : strategyTab === 'm1' ? '1H bias → 5M break-of-structure → chờ retest + nến xác nhận trên M1.'
+                 : 'Nến H1 nhỏ nhất 7 nến (NR7) → nến kế đóng cửa phá vỡ → entry giá đóng, SL đầu kia nến NR7. Thắng ít (~18%) nhưng lời RR 1:5.' }}
             </span>
           </div>
 
@@ -392,11 +398,11 @@ createApp({
     const screener = ref({ updated_at: null, scanned: 0, results: [] });
     const screenerLoading = ref(false);
     const intradayHours = computed(() => screener.value.intraday_lookback_h ?? 48);
-    const strategy = reactive({ scalp: true, swing: true, m1: true });
+    const strategy = reactive({ scalp: true, swing: true, m1: true, nr7: true });
     const strategyTab = ref('scalp');
-    const strategySignals = reactive({ scalp: [], swing: [], m1: [] });
+    const strategySignals = reactive({ scalp: [], swing: [], m1: [], nr7: [] });
     const closedTrades = computed(() =>
-      [...strategySignals.scalp, ...strategySignals.swing, ...strategySignals.m1]
+      [...strategySignals.scalp, ...strategySignals.swing, ...strategySignals.m1, ...strategySignals.nr7]
         .filter((s) => s.status === 'win' || s.status === 'loss')
         .sort((a, b) => (b.exit_time ?? b.closed_at ?? 0) - (a.exit_time ?? a.closed_at ?? 0))
     );
@@ -412,6 +418,7 @@ createApp({
       scalp: calcStats(closedTrades.value.filter((s) => s.system === 'scalp')),
       swing: calcStats(closedTrades.value.filter((s) => s.system === 'swing')),
       m1: calcStats(closedTrades.value.filter((s) => s.system === 'm1')),
+      nr7: calcStats(closedTrades.value.filter((s) => s.system === 'nr7')),
     }));
     const selectedStrategyId = ref(null);
     const strategyLabels = ref([]);
@@ -677,7 +684,7 @@ createApp({
 
     function findStrategySignal(id) {
       return strategySignals.scalp.find((x) => x.id === id) || strategySignals.swing.find((x) => x.id === id)
-        || strategySignals.m1.find((x) => x.id === id) || null;
+        || strategySignals.m1.find((x) => x.id === id) || strategySignals.nr7.find((x) => x.id === id) || null;
     }
     function clearStrategyLines() {
       strategyLines.forEach((l) => { try { chart.removeSeries(l); } catch {} });
@@ -727,21 +734,23 @@ createApp({
       const now = Math.floor(Date.now() / 1000);
       const t1 = Math.min(Math.max(t0 + minWidth, s.exit_time ?? now), now);
 
-      const targetBox = chart.addBaselineSeries({
-        baseValue: { type: 'price', price: s.entry },
-        topFillColor1: 'rgba(14,203,129,0.28)', topFillColor2: 'rgba(14,203,129,0.05)', topLineColor: COLORS.up,
-        bottomFillColor1: 'rgba(0,0,0,0)', bottomFillColor2: 'rgba(0,0,0,0)', bottomLineColor: 'rgba(0,0,0,0)',
-        lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-      });
-      targetBox.setData([{ time: t0, value: s.tp }, { time: t1, value: s.tp }]);
-
-      const stopBox = chart.addBaselineSeries({
-        baseValue: { type: 'price', price: s.entry },
-        topFillColor1: 'rgba(0,0,0,0)', topFillColor2: 'rgba(0,0,0,0)', topLineColor: 'rgba(0,0,0,0)',
-        bottomFillColor1: 'rgba(246,70,93,0.05)', bottomFillColor2: 'rgba(246,70,93,0.28)', bottomLineColor: COLORS.down,
-        lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-      });
-      stopBox.setData([{ time: t0, value: s.sl }, { time: t1, value: s.sl }]);
+      // Baseline neo tại entry: khối nằm phía TRÊN entry thì tô "top", phía DƯỚI thì tô "bottom".
+      // Lệnh mua: TP trên / SL dưới. Lệnh bán: TP dưới / SL trên — nên phải chọn phía tô theo hướng.
+      const clear = 'rgba(0,0,0,0)';
+      const mkBox = (value, above, rgb, line) => {
+        const box = chart.addBaselineSeries({
+          baseValue: { type: 'price', price: s.entry },
+          topFillColor1: above ? `rgba(${rgb},0.28)` : clear, topFillColor2: above ? `rgba(${rgb},0.05)` : clear,
+          topLineColor: above ? line : clear,
+          bottomFillColor1: above ? clear : `rgba(${rgb},0.05)`, bottomFillColor2: above ? clear : `rgba(${rgb},0.28)`,
+          bottomLineColor: above ? clear : line,
+          lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+        box.setData([{ time: t0, value }, { time: t1, value }]);
+        return box;
+      };
+      const targetBox = mkBox(s.tp, s.tp > s.entry, '14,203,129', COLORS.up);
+      const stopBox = mkBox(s.sl, s.sl > s.entry, '246,70,93', COLORS.down);
       strategyLines = [targetBox, stopBox];
 
       // rAF: đợi chart render xong 1 frame rồi mới đọc toạ độ pixel, tránh timeToCoordinate/
@@ -803,7 +812,7 @@ createApp({
       if (!notifyOn.value || Notification.permission !== 'granted') return;
       try {
         const bull = sig.direction === 'bullish';
-        const sysLabel = sig.system === 'scalp' ? '⚡ Scalp' : sig.system === 'swing' ? '📈 Swing' : '🎯 M1';
+        const sysLabel = sig.system === 'scalp' ? '⚡ Scalp' : sig.system === 'swing' ? '📈 Swing' : sig.system === 'nr7' ? '📐 NR7' : '🎯 M1';
         const n = new Notification(
           `${sysLabel} · ${sig.symbol} ${sig.timeframe} · ${bull ? '▲ Bullish' : '▼ Bearish'}`,
           {
@@ -852,6 +861,7 @@ createApp({
           strategySignals.scalp = msg.data.scalp || [];
           strategySignals.swing = msg.data.swing || [];
           strategySignals.m1 = msg.data.m1 || [];
+          strategySignals.nr7 = msg.data.nr7 || [];
         } else if (msg.type === 'strategy_signal') {
           upsertStrategySignal(msg.data);
           beep(msg.data.direction === 'bullish');
