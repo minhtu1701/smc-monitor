@@ -62,26 +62,87 @@
     </div>
 
     <div class="ml-auto flex items-center gap-2">
-      <button @click="toggleStrategy('scalp')"
+      <button @click="toggleStrategy('pb4h')"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
-              :class="strategy.scalp ? 'text-gold' : 'text-muted'">
-        {{ strategy.scalp ? '⚡ Scalp on' : '⚡ Scalp off' }}
+              :class="strategy.pb4h ? 'text-gold' : 'text-muted'">
+        {{ strategy.pb4h ? '🌀 PB H4 on' : '🌀 PB H4 off' }}
       </button>
-      <button @click="toggleStrategy('swing')"
+      <button @click="toggleStrategy('nr74h')"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
-              :class="strategy.swing ? 'text-gold' : 'text-muted'">
-        {{ strategy.swing ? '📈 Swing on' : '📈 Swing off' }}
+              :class="strategy.nr74h ? 'text-gold' : 'text-muted'">
+        {{ strategy.nr74h ? '🧭 NR7 H4 on' : '🧭 NR7 H4 off' }}
       </button>
-      <button @click="toggleStrategy('m1')"
+      <button @click="toggleStrategy('bo4h')"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
-              :class="strategy.m1 ? 'text-gold' : 'text-muted'">
-        {{ strategy.m1 ? '🎯 M1 on' : '🎯 M1 off' }}
+              :class="strategy.bo4h ? 'text-gold' : 'text-muted'">
+        {{ strategy.bo4h ? '💥 BO H4 on' : '💥 BO H4 off' }}
       </button>
-      <button @click="toggleStrategy('nr7')"
+      <button @click="toggleStrategy('st4h')"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
-              :class="strategy.nr7 ? 'text-gold' : 'text-muted'">
-        {{ strategy.nr7 ? '📐 NR7 on' : '📐 NR7 off' }}
+              :class="strategy.st4h ? 'text-gold' : 'text-muted'">
+        {{ strategy.st4h ? '📈 ST H4 on' : '📈 ST H4 off' }}
       </button>
+      <button @click="toggleStrategy('bo15')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.bo15 ? 'text-gold' : 'text-muted'">
+        {{ strategy.bo15 ? '💥 BO 1.5 on' : '💥 BO 1.5 off' }}
+      </button>
+      <button @click="toggleStrategy('st15')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.st15 ? 'text-gold' : 'text-muted'">
+        {{ strategy.st15 ? '📈 ST 1.5 on' : '📈 ST 1.5 off' }}
+      </button>
+      <button @click="toggleStrategy('vc4h')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.vc4h ? 'text-gold' : 'text-muted'"
+              title="Volume Capitulation H4: BÁN tiếp đà khi nến H4 đóng 16:00/20:00 UTC, volume > 3x, 3 nến GIẢM liên tiếp. TP/SL 1.5 ATR, tối đa 3 ngày. Backtest win ~67%.">
+        {{ strategy.vc4h ? '🌋 VC H4 on' : '🌋 VC H4 off' }}
+      </button>
+      <button @click="toggleStrategy('news')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.news ? 'text-gold' : 'text-muted'"
+              title="Tự BÁN khi Binance gắn nhãn Monitoring / huỷ niêm yết spot một coin có USDT perp (SL +10%, đóng sau 24h). Tin khác chỉ báo.">
+        {{ strategy.news ? '📰 News on' : '📰 News off' }}
+      </button>
+      <button @click="toggleStrategy('ny')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.ny ? 'text-gold' : 'text-muted'"
+              title="Chỉ nhận tín hiệu PB/ST (và BO 1.5/ST 1.5) khi nến H4 đóng lúc 16:00 hoặc 20:00 UTC (23h, 3h giờ VN — phiên New York). BO H4 không dùng lọc này.">
+        {{ strategy.ny ? '🗽 Chỉ NY on' : '🗽 Chỉ NY off' }}
+      </button>
+      <button @click="toggleStrategy('zone')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.zone ? 'text-gold' : 'text-muted'"
+              title="Cảnh báo khi giá hồi về vùng OB/FVG/iFVG cùng hướng bias HTF">
+        {{ strategy.zone ? '🧭 Zone on' : '🧭 Zone off' }}
+      </button>
+      <div class="relative">
+        <button @click="notifOpen = !notifOpen; if (notifOpen) markAllRead()"
+                class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition relative"
+                :class="unreadCount ? 'text-gold border-gold/60' : 'text-muted'" title="Lịch sử thông báo">
+          📬 Thông báo
+          <span v-if="unreadCount" class="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-down text-white text-[10px] font-bold flex items-center justify-center">{{ unreadCount > 99 ? '99+' : unreadCount }}</span>
+        </button>
+        <div v-if="notifOpen" class="absolute right-0 top-full mt-2 w-[440px] max-h-[75vh] overflow-y-auto bg-panel border border-line rounded-lg shadow-2xl z-50">
+          <div class="sticky top-0 bg-panel border-b border-line px-3 py-2 flex items-center gap-2 text-xs">
+            <span class="font-semibold text-gray-200">Thông báo ({{ notifLog.length }})</span>
+            <button v-for="f in [['all','Tất cả'],['strategy','Strategy'],['news','Tin'],['zone','Zone'],['signal','CHoCH']]" :key="f[0]" @click="notifFilter = f[0]"
+                    class="px-1.5 py-0.5 rounded" :class="notifFilter === f[0] ? 'bg-line text-gray-100' : 'text-muted hover:text-gray-200'">{{ f[1] }}</button>
+            <button @click="clearNotifs" class="ml-auto text-muted hover:text-down">Xoá hết</button>
+            <button @click="notifOpen = false" class="text-muted hover:text-gray-200 px-1">✕</button>
+          </div>
+          <div v-if="!filteredNotifs.length" class="p-6 text-center text-sm text-muted">Chưa có thông báo.</div>
+          <button v-for="n in filteredNotifs" :key="n.id" @click="openNotif(n)"
+                  class="w-full text-left px-3 py-2 border-b border-line/60 hover:bg-panel2 transition border-l-2"
+                  :class="n.tone === 'up' ? 'border-l-up' : n.tone === 'down' ? 'border-l-down' : 'border-l-gold'">
+            <div class="flex items-center gap-2">
+              <span class="text-[13px] font-semibold text-gray-100">{{ n.title }}</span>
+              <span class="ml-auto text-[10px] text-muted shrink-0" :title="fmtDate(n.ts)">{{ timeAgo(n.ts) }}</span>
+            </div>
+            <div class="text-[11px] text-gray-400 mt-0.5 font-mono">{{ n.body }}</div>
+          </button>
+        </div>
+      </div>
       <button @click="soundOn = !soundOn"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
               :class="soundOn ? 'text-gold' : 'text-muted'">
@@ -156,7 +217,7 @@
     <!-- ── Signal panel ── -->
     <aside class="w-full lg:w-[400px] shrink-0 flex flex-col border-t lg:border-t-0 lg:border-l border-line bg-panel min-h-0 max-h-[45vh] lg:max-h-none">
       <div class="px-4 pt-3 pb-2 border-b border-line">
-        <div class="flex items-center gap-1 text-sm">
+        <div class="flex flex-wrap items-center gap-1 text-sm">
           <button @click="rightTab = 'alerts'" class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
                   :class="rightTab === 'alerts' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
             ⚡ Alerts
@@ -166,10 +227,20 @@
                   :class="rightTab === 'screener' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
             🔍 Screener
           </button>
+          <button @click="rightTab = 'zone'"
+                  class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
+                  :class="rightTab === 'zone' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
+            🧭 Zone <span v-if="zoneAlerts.length" class="text-muted text-xs">{{ zoneAlerts.length }}</span>
+          </button>
           <button @click="openStrategyTab"
                   class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
                   :class="rightTab === 'strategy' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
             🎯 Strategy
+          </button>
+          <button @click="rightTab = 'feed'; loadFeed()"
+                  class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
+                  :class="rightTab === 'feed' ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
+            📡 Tin
           </button>
           <button @click="rightTab = 'log'"
                   class="px-2.5 py-1 rounded transition font-semibold tracking-wide"
@@ -189,7 +260,19 @@
           <span class="text-xs text-muted">{{ signals.length }}</span>
         </div>
 
-        <div v-else-if="rightTab === 'screener'" class="mt-2 flex items-center justify-between text-xs text-muted">
+        <div v-else-if="rightTab === 'screener'" class="mt-2 flex gap-1 text-xs">
+          <button v-for="m in [['acc', 'Tích lũy (giá rẻ)'], ['vol', 'Sắp biến động mạnh']]" :key="m[0]" @click="screenerMode = m[0]; if (m[0] === 'vol') loadVolwatch()"
+                  class="px-2 py-1 rounded border transition" :class="screenerMode === m[0] ? 'border-gold text-gold' : 'border-line text-muted hover:text-gray-200'">{{ m[1] }}</button>
+        </div>
+        <div v-if="rightTab === 'screener' && screenerMode === 'vol'" class="mt-2 flex items-start justify-between gap-2 text-xs text-muted">
+          <span>
+            Xác suất giá CHẠM +15% / -15% trong 24h tới (hai mô hình riêng, đã hiệu chỉnh ngoài mẫu; nền: {{ volwatch.base_up ?? 5.7 }}% / {{ volwatch.base_dn ?? 3.3 }}%).
+            Tin được để đánh giá RỦI RO; backtest giao dịch theo chiều nghiêng vẫn lỗ → không phải tín hiệu vào lệnh.
+            <br />{{ volwatch.updated_at ? `Cập nhật ${timeAgo(volwatch.updated_at)} · chấm ${volwatch.scanned} hợp đồng · quét lại mỗi giờ` : 'Đang chờ lượt quét đầu (~3 phút sau khi server khởi động)' }}
+          </span>
+          <button @click="loadVolwatch" class="shrink-0 px-2 py-1 rounded border border-line hover:border-muted hover:text-gray-200 transition">↻</button>
+        </div>
+        <div v-if="rightTab === 'screener' && screenerMode === 'acc'" class="mt-2 flex items-center justify-between text-xs text-muted">
           <span>
             Coin &lt; ${{ screener.max_price ?? '0.1' }} đang tích lũy (siết BB/ATR + volume cạn + OBV tăng)
             <br />{{ screener.updated_at ? `Cập nhật ${timeAgo(screener.updated_at)} · quét ${screener.scanned} coin` : '' }}
@@ -200,16 +283,32 @@
           </button>
         </div>
 
+        <div v-else-if="rightTab === 'feed'" class="mt-2 flex flex-wrap gap-1 text-xs">
+          <button v-for="f in feedSources" :key="f" @click="feedFilter = f"
+                  class="px-2 py-0.5 rounded border" :class="feedFilter === f ? 'border-gold text-gold' : 'border-line text-muted hover:text-gray-200'">{{ f }}</button>
+          <label class="ml-auto flex items-center gap-1 text-muted"><input type="checkbox" v-model="feedCoinOnly" /> chỉ bài có coin</label>
+        </div>
+        <div v-else-if="rightTab === 'zone'" class="mt-2 text-xs text-muted">
+          Bias HTF (H4/D1) + giá hồi về vùng OB / iFVG cùng hướng, hoặc FVG★ (FVG đạt đủ 4 quy tắc: thuận xu hướng HTF, gắn BOS/CHoCH, Discount/Premium, dùng 1 lần) → chờ CHoCH / engulfing / pin ở M1–M15.
+          Đây là cảnh báo theo dõi, không phải tín hiệu vào lệnh.
+        </div>
+
         <div v-else-if="rightTab === 'strategy'" class="mt-2 flex items-center gap-1 text-xs flex-wrap">
-          <button v-for="k in ['scalp','swing','m1','nr7']" :key="k" @click="strategyTab = k"
+          <button v-for="k in ['pb4h','nr74h','bo4h','st4h','bo15','st15','news','vc4h']" :key="k" @click="strategyTab = k"
                   class="px-2.5 py-1 rounded transition"
                   :class="strategyTab === k ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
-            {{ k === 'scalp' ? 'Scalp (5m, RR 1:2)' : k === 'swing' ? 'Swing (4h, RR 1:3)' : k === 'm1' ? 'M1 Entry (RR 1:2)' : 'NR7 H1 (RR 1:5)' }}
+            {{ k === 'pb4h' ? 'Pullback H4 + filter (RR 1:8)' : k === 'nr74h' ? 'NR7 H4 + xu hướng (RR 1:5)' : k === 'bo4h' ? 'Breakout H4 (RR 1:8)' : k === 'st4h' ? 'Supertrend H4 (RR 1:8)' : k === 'bo15' ? 'Breakout H4 (RR 1:1.5)' : k === 'news' ? 'News Binance (bán 24h)' : k === 'vc4h' ? 'Bán tháo volume H4 (win ~67%)' : 'Supertrend H4 (RR 1:1.5)' }}
             <span class="text-muted">{{ strategySignals[k].length }}</span>
+            <span v-if="logStats[k].n" class="font-mono font-semibold"
+                  :class="logStats[k].totalR > 0 ? 'text-up' : logStats[k].totalR < 0 ? 'text-down' : 'text-muted'"
+                  :title="logStats[k].wins + ' thắng / ' + logStats[k].losses + ' thua · ' + (logStats[k].totalR >= 0 ? '+' : '') + logStats[k].totalR.toFixed(1) + 'R'">
+              · {{ logStats[k].winrate.toFixed(0) }}%
+            </span>
+            <span v-else class="text-muted" title="Chưa có lệnh nào đóng">· —</span>
           </button>
         </div>
 
-        <div v-else class="mt-2 grid grid-cols-3 gap-2 text-xs">
+        <div v-else-if="rightTab === 'log'" class="mt-2 grid grid-cols-3 gap-2 text-xs">
           <div v-for="(st, k) in logStats" :key="k" class="bg-panel2 rounded px-2 py-1.5">
             <div class="text-muted capitalize">{{ k === 'all' ? 'Tất cả' : k }}</div>
             <div class="font-mono num font-semibold" :class="st.totalR > 0 ? 'text-up' : st.totalR < 0 ? 'text-down' : 'text-gray-300'">
@@ -254,6 +353,30 @@
           </button>
         </template>
 
+        <template v-else-if="rightTab === 'screener' && screenerMode === 'vol'">
+          <div v-if="!volwatch.results.length" class="p-8 text-center text-sm text-muted">
+            <div class="text-2xl mb-2">🌋</div>Chưa có dữ liệu. Server chấm điểm ~470 hợp đồng mỗi giờ (mất ~2–3 phút).
+          </div>
+          <button v-for="(r, i) in volwatch.results" :key="r.symbol" @click="openVolRow(r)"
+                  class="w-full text-left px-4 py-2.5 border-b border-line/70 hover:bg-panel2 transition"
+                  :class="symbol === r.symbol ? 'bg-panel2' : ''">
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-muted w-4 shrink-0">{{ i + 1 }}</span>
+              <span class="font-semibold text-sm">{{ r.symbol }}</span>
+              <span class="font-mono num text-[11px] text-muted">{{ fmtPrice(r.price) }}</span>
+              <span class="font-mono num text-[11px]" :class="r.chg24 >= 0 ? 'text-up' : 'text-down'">{{ r.chg24 >= 0 ? '+' : '' }}{{ r.chg24 }}% 24h</span>
+              <span v-if="r.age < 60" class="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300">mới {{ r.age }}d</span>
+            </div>
+            <div class="mt-1.5 grid grid-cols-4 gap-2 text-[11px]">
+              <div :title="'Xác suất giá chạm +15% trong 24h tới. Chạm +30%: ~' + r.p_pump + '%'"><div class="text-muted">Tăng ≥15%</div><div class="font-mono num text-up font-semibold">{{ r.p_up }}%</div></div>
+              <div :title="'Xác suất giá chạm -15% trong 24h tới'"><div class="text-muted">Sập ≥15%</div><div class="font-mono num text-down font-semibold">{{ r.p_dn }}%</div></div>
+              <div title="Biến động giá 7 ngày"><div class="text-muted">7 ngày</div><div class="font-mono num" :class="r.chg7 >= 0 ? 'text-up' : 'text-down'">{{ r.chg7 >= 0 ? '+' : '' }}{{ r.chg7 }}%</div></div>
+              <div title="Funding gần nhất (%/kỳ)"><div class="text-muted">Funding</div><div class="font-mono num" :class="r.fund < 0 ? 'text-down' : 'text-gray-300'">{{ r.fund }}%</div></div>
+            </div>
+            <div class="mt-1 text-[10px] text-muted">{{ r.why.join(' · ') }} · vol24h {{ fmtPrice(r.vol24) }}</div>
+          </button>
+        </template>
+
         <template v-else-if="rightTab === 'screener'">
           <div v-if="screenerLoading && !screener.results.length" class="p-8 text-center text-sm text-muted">
             Đang quét…
@@ -288,15 +411,82 @@
           </button>
         </template>
 
+        <template v-else-if="rightTab === 'feed'">
+          <div v-if="!filteredFeed.length" class="p-8 text-center text-sm text-muted">
+            <div class="text-2xl mb-2">📡</div>Chưa có tin. Server đọc Telegram (Whale Alert, Tree News, Binance, Wu Blockchain, Watcher Guru…) và RSS (CoinDesk, The Block…) mỗi 90 giây.
+          </div>
+          <div v-for="it in filteredFeed" :key="it.id" class="px-4 py-2.5 border-b border-line/70 text-[12px]">
+            <div class="flex items-center gap-2 text-[10px]">
+              <span class="px-1.5 py-0.5 rounded bg-line text-gray-300">{{ it.source }}</span>
+              <span class="text-muted" :title="fmtDate(it.ts)">{{ timeAgo(it.ts) }}</span>
+              <a v-if="it.url" :href="it.url" target="_blank" rel="noopener" class="ml-auto text-muted hover:text-gold">mở ↗</a>
+            </div>
+            <div class="mt-1 text-gray-200 leading-snug">{{ showOrig[it.id] || !it.text_vi ? it.text : it.text_vi }}</div>
+            <button v-if="it.text_vi" @click="showOrig[it.id] = !showOrig[it.id]" class="mt-0.5 text-[10px] text-muted hover:text-gold">
+              {{ showOrig[it.id] ? 'xem bản dịch' : 'xem bản gốc (EN)' }}</button>
+            <div v-if="it.coins && it.coins.length" class="mt-1.5 flex flex-wrap gap-1">
+              <button v-for="c in it.coins" :key="c" @click="selectSymbol(c)"
+                      class="px-1.5 py-0.5 rounded bg-gold/10 text-gold text-[10px] font-mono hover:bg-gold/25">
+                {{ c.replace('USDT', '') }}<span v-if="it.prices && it.prices[c]" class="text-muted"> @{{ fmtPrice(it.prices[c]) }}</span>
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="rightTab === 'zone'">
+          <div v-if="!zoneAlerts.length" class="p-8 text-center text-sm text-muted">
+            <div class="text-2xl mb-2">🧭</div>
+            Chưa có cảnh báo vùng.<br />
+            <span class="text-xs">Khi giá hồi về vùng OB/FVG/iFVG cùng hướng bias H4/D1 sẽ hiện ở đây (mỗi vùng báo 1 lần).</span>
+          </div>
+          <button v-for="a in zoneAlerts" :key="a.id" @click="openZoneAlert(a)"
+                  class="w-full text-left px-4 py-3 border-b border-line/70 hover:bg-panel2 transition border-l-2"
+                  :class="[selectedZoneId === a.id ? 'bg-panel2' : '', a.direction === 'bullish' ? 'border-l-up' : 'border-l-down']">
+            <div class="flex items-center gap-2">
+              <span class="font-semibold text-sm">{{ a.symbol }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-line text-gray-300 font-mono">{{ a.timeframe.toUpperCase() }}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide"
+                    :class="a.direction === 'bullish' ? 'bg-up/15 text-up' : 'bg-down/15 text-down'">
+                {{ a.direction === 'bullish' ? (a.note ? '▲ Mua' : '▲ Bias TĂNG') : (a.note ? '▼ Bán' : '▼ Bias GIẢM') }}
+              </span>
+              <span class="ml-auto text-[11px] text-muted" :title="fmtDate(a.detected_at)">{{ timeAgo(a.detected_at) }}</span>
+            </div>
+            <div class="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
+              <div><div class="text-muted">Vùng</div><div class="font-mono num text-gold">{{ a.kinds.join(' + ') }}</div></div>
+              <div><div class="text-muted">Từ – đến</div><div class="font-mono num text-gray-300">{{ fmtPrice(a.zone_bottom) }} – {{ fmtPrice(a.zone_top) }}</div></div>
+              <div><div class="text-muted">Giá lúc báo</div><div class="font-mono num text-gray-300">{{ fmtPrice(a.price) }}</div></div>
+            </div>
+            <div class="mt-1 text-[10px] text-muted">
+              {{ a.note ? a.note + ' · ' : 'Bias từ ' + fmtDate(a.bias_since) + ' · ' }}vô hiệu nếu nến {{ a.timeframe.toUpperCase() }} đóng cửa {{ a.direction === 'bullish' ? 'dưới' : 'trên' }} vùng
+            </div>
+          </button>
+        </template>
+
         <template v-else-if="rightTab === 'strategy'">
+          <div class="px-4 py-2 border-b border-line/70 bg-panel2/40 text-[11px] flex items-center gap-3 flex-wrap">
+            <span class="text-muted">Win rate</span>
+            <span class="font-mono font-semibold text-sm"
+                  :class="logStats[strategyTab].n ? (logStats[strategyTab].totalR > 0 ? 'text-up' : logStats[strategyTab].totalR < 0 ? 'text-down' : 'text-gray-200') : 'text-muted'">
+              {{ logStats[strategyTab].n ? logStats[strategyTab].winrate.toFixed(1) + '%' : '—' }}
+            </span>
+            <span class="text-muted">{{ logStats[strategyTab].wins }} thắng / {{ logStats[strategyTab].losses }} thua</span>
+            <span class="font-mono" :class="logStats[strategyTab].totalR > 0 ? 'text-up' : logStats[strategyTab].totalR < 0 ? 'text-down' : 'text-muted'">
+              {{ logStats[strategyTab].totalR >= 0 ? '+' : '' }}{{ logStats[strategyTab].totalR.toFixed(1) }}R
+            </span>
+            <span class="text-muted">{{ strategySignals[strategyTab].filter((x) => x.status === 'open').length }} đang mở · {{ strategySignals[strategyTab].filter((x) => x.status === 'pending').length }} chờ khớp</span>
+          </div>
           <div v-if="!strategySignals[strategyTab].length" class="p-8 text-center text-sm text-muted">
             <div class="text-2xl mb-2">🎯</div>
             Chưa có tín hiệu {{ strategyTab }}.<br />
             <span class="text-xs">
-              {{ strategyTab === 'scalp' ? 'H4 bias → M15 OB/FVG → trigger nến M5 + lọc VWAP.'
-                 : strategyTab === 'swing' ? 'Daily bias → H4 OB/FVG → trigger nến H4 + lọc VWAP.'
-                 : strategyTab === 'm1' ? '1H bias → 5M break-of-structure → chờ retest + nến xác nhận trên M1.'
-                 : 'Nến H1 nhỏ nhất 7 nến (NR7) → nến kế đóng cửa phá vỡ → entry giá đóng, SL đầu kia nến NR7. Thắng ít (~18%) nhưng lời RR 1:5.' }}
+              {{ ['pb4h','bo4h','st4h'].includes(strategyTab) ? 'Chỉ nhận tín hiệu khi ≥2 coin khác cùng hệ thống ra tín hiệu cùng chiều trong 24h (đồng thuận thị trường). ' : '' }}{{ strategyTab === 'pb4h' ? 'Xu hướng EMA50/200 (H4) còn non (≤141 nến), chưa kéo xa EMA200 → giá đóng cửa lại trên/dưới EMA20 với nến có thân → đặt LIMIT thấp hơn giá đóng 1 ATR (chờ 24h), SL 2 ATR, TP 1:8.'
+                 : strategyTab === 'nr74h' ? 'Nến H4 nhỏ nhất 7 nến (NR7) → nến kế đóng cửa phá vỡ CÙNG hướng EMA50/200 H4 và cùng phía EMA20 → SL đầu kia nến NR7, TP 1:5.'
+                 : strategyTab === 'bo4h' ? 'Nến H4 đóng phá biên 20 nến (thân lớn) + volume ≥1.2× + BTC cùng hướng + giá cùng phía EMA200 + phá xa biên + coin chưa vượt trội BTC 30 ngày (≤ +3% theo hướng lệnh) → CHỈ MUA, đặt LIMIT thấp hơn giá đóng 0.5 ATR (chờ 24h), SL cực trị 10 nến, TP 1:8; nếu sau 2 ngày (12 nến H4) chưa lời được 1R thì đóng ở giá hiện tại. Không lọc giờ NY.'
+                 : strategyTab === 'st4h' ? 'Supertrend (3×ATR14) đổi hướng ở nến H4 đóng cửa, thuận xu hướng EMA50/200 → CHỈ BÁN (lệnh mua lỗ trong backtest) → đặt LIMIT cao hơn giá đóng 0.25 ATR (chờ 24h), SL 1 ATR, TP 1:8.'
+                 : strategyTab === 'bo15' ? 'Cùng tín hiệu Breakout H4 nhưng TP 1:1.5 (thắng ~45%): đường vốn mượt hơn, kỳ vọng mỗi lệnh ~ nửa bản 1:5. Trùng thời điểm với hệ thống Breakout H4 gốc.'
+                 : strategyTab === 'vc4h' ? 'Coin giảm 3 nến H4 liên tiếp với volume > 3 lần trung bình (bán tháo), nến đóng lúc 16:00 hoặc 20:00 UTC (phiên Mỹ) → BÁN TIẾP ĐÀ ở giá đóng, TP 1.5 ATR, SL 1.5 ATR, tự đóng sau tối đa 3 ngày. Backtest 98 coin/5 năm: thắng 67%, +0.33R/lệnh, dương 6/6 năm.'
+                 : strategyTab === 'news' ? 'Khi Binance gắn nhãn Monitoring hoặc huỷ niêm yết spot một coin có USDT perp → BÁN ngay ở giá hiện tại, SL +10%, tự đóng sau 24h. Lịch sử: Monitoring TB +2.6%/lệnh (thắng 61%), huỷ niêm yết TB +5.6%/lệnh (thắng 58%). Đồng thời chặn lệnh MUA của các hệ thống khác trên coin đó 30 ngày.'
+                 : 'Cùng tín hiệu Supertrend H4 nhưng TP 1:1.5 (thắng ~45%): SL 2 ATR, TP 1:1.5. Trùng thời điểm với hệ thống Supertrend H4 gốc.' }}
             </span>
           </div>
 
@@ -304,7 +494,7 @@
                   class="w-full text-left px-4 py-3 border-b border-line/70 hover:bg-panel2 transition border-l-2"
                   :class="[
                     selectedStrategyId === s.id ? 'bg-panel2' : '',
-                    s.status === 'win' ? 'border-l-up' : s.status === 'loss' ? 'border-l-down' : 'border-l-gold'
+                    s.status === 'win' ? 'border-l-up' : s.status === 'loss' ? 'border-l-down' : s.status === 'expired' ? 'border-l-line opacity-60' : 'border-l-gold'
                   ]">
             <div class="flex items-center gap-2">
               <span class="font-semibold text-sm">{{ s.symbol }}</span>
@@ -315,17 +505,26 @@
                 {{ s.direction === 'bullish' ? '▲' : '▼' }}
               </span>
               <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide"
-                    :class="s.status === 'win' ? 'bg-up/15 text-up' : s.status === 'loss' ? 'bg-down/15 text-down' : 'bg-gold/15 text-gold'">
-                {{ s.status === 'win' ? 'LỜI' : s.status === 'loss' ? 'LỖ' : 'ĐANG MỞ' }}
+                    :class="s.status === 'win' ? 'bg-up/15 text-up' : s.status === 'loss' ? 'bg-down/15 text-down' : s.status === 'expired' ? 'bg-line text-muted' : s.status === 'pending' ? 'bg-sky-500/15 text-sky-300' : 'bg-gold/15 text-gold'">
+                {{ statusLabel(s) }}
               </span>
             </div>
-            <div class="mt-1.5 grid grid-cols-4 gap-2 text-[11px]">
-              <div><div class="text-muted">Entry</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.entry) }}</div></div>
-              <div><div class="text-muted">SL</div><div class="font-mono num text-down">{{ fmtPrice(s.sl) }}</div></div>
-              <div><div class="text-muted">TP</div><div class="font-mono num text-up">{{ fmtPrice(s.tp) }}</div></div>
-              <div><div class="text-muted">RR</div><div class="font-mono num text-gray-300">1:{{ s.rr }}</div></div>
+            <div class="mt-1.5 grid grid-cols-5 gap-2 text-[11px]">
+              <div><div class="text-muted">{{ s.order === 'limit' ? 'Limit' : 'Entry' }}</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.entry) }}</div></div>
+              <div><div class="text-muted">{{ s.trail ? 'SL (trail)' : 'SL' }}</div><div class="font-mono num text-down">{{ fmtPrice(s.sl) }}</div></div>
+              <div><div class="text-muted">TP</div><div class="font-mono num text-up">{{ s.tp ? fmtPrice(s.tp) : '—' }}</div></div>
+              <div><div class="text-muted">{{ s.trail || s.hold_h ? 'Thoát' : 'RR' }}</div><div class="font-mono num text-gray-300">{{ s.trail ? 'Trail ' + s.trail + 'R' : s.hold_h ? 'sau ' + s.hold_h + 'h' : '1:' + s.rr }}</div></div>
+              <div :title="pnl(s).title"><div class="text-muted">Lời/lỗ</div>
+                <div class="font-mono num font-semibold" :class="pnl(s).cls">{{ pnl(s).r }}</div>
+                <div class="font-mono num text-[10px]" :class="pnl(s).cls">{{ pnl(s).pct }}</div></div>
             </div>
-            <div class="mt-1 text-[10px] text-muted">{{ timeAgo(s.detected_at) }} · entry {{ fmtDate(s.entry_time) }}</div>
+            <div class="mt-1 text-[10px] text-muted">{{ timeAgo(s.detected_at) }} ·
+              <template v-if="s.order === 'limit'">đặt {{ fmtDate(s.entry_time) }}
+                <template v-if="s.fill_time"> · khớp {{ fmtDate(s.fill_time) }}</template>
+                <template v-else-if="s.status === 'pending'"> · hết hạn {{ fmtDate(s.expires_at) }}</template>
+              </template>
+              <template v-else>entry {{ fmtDate(s.entry_time) }}</template>
+            </div>
           </button>
         </template>
 
@@ -348,7 +547,7 @@
                 {{ s.direction === 'bullish' ? '▲' : '▼' }}
               </span>
               <span class="ml-auto font-mono num text-sm font-semibold" :class="s.status === 'win' ? 'text-up' : 'text-down'">
-                {{ s.status === 'win' ? '+' + s.rr : '-1' }}R
+                {{ fmtR(s) }}R
               </span>
             </div>
             <div class="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
@@ -398,27 +597,121 @@ createApp({
     const screener = ref({ updated_at: null, scanned: 0, results: [] });
     const screenerLoading = ref(false);
     const intradayHours = computed(() => screener.value.intraday_lookback_h ?? 48);
-    const strategy = reactive({ scalp: true, swing: true, m1: true, nr7: true });
-    const strategyTab = ref('scalp');
-    const strategySignals = reactive({ scalp: [], swing: [], m1: [], nr7: [] });
+    const strategy = reactive({ pb4h: true, nr74h: false, bo4h: true, st4h: true, bo15: true, st15: true, news: true, vc4h: true, zone: true, ny: true });
+    const zoneAlerts = ref([]);
+    const selectedZoneId = ref(null);
+    let zoneLines = [];
+    const strategyTab = ref('bo4h');
+    const strategySignals = reactive({ pb4h: [], nr74h: [], bo4h: [], st4h: [], bo15: [], st15: [], news: [], vc4h: [] });
     const closedTrades = computed(() =>
-      [...strategySignals.scalp, ...strategySignals.swing, ...strategySignals.m1, ...strategySignals.nr7]
+      Object.values(strategySignals).flat()
         .filter((s) => s.status === 'win' || s.status === 'loss')
         .sort((a, b) => (b.exit_time ?? b.closed_at ?? 0) - (a.exit_time ?? a.closed_at ?? 0))
     );
+    // Lệnh trailing có R thực tế (s.r); lệnh TP cố định thì +rr khi thắng, -1 khi thua.
+    const screenerMode = ref('acc');
+    const volwatch = ref({ results: [] });
+    async function loadVolwatch() {
+      try { volwatch.value = await (await fetch('/api/volwatch')).json(); } catch {}
+    }
+    function openVolRow(r) {
+      ensureSymbol(r.symbol);
+      symbol.value = r.symbol;
+      timeframe.value = '1h';
+      selectedId.value = null;
+      loadChart();
+    }
+    // Lời/lỗ: lệnh đóng = kết quả thật; đang mở = theo giá hiện tại (giá live nếu đang xem coin đó, không thì giá lần quét gần nhất ~5 phút)
+    function pnl(s) {
+      const bull = s.direction === 'bullish' ? 1 : -1;
+      const risk = Math.abs(s.entry - (s.sl0 ?? s.sl));
+      if (s.status === 'win' || s.status === 'loss') {
+        const r = tradeR(s);
+        const px = s.exit_price ?? (s.status === 'win' ? s.tp : s.sl);
+        const pct = px ? (px - s.entry) / s.entry * bull * 100 : null;
+        return { r: (r >= 0 ? '+' : '') + r.toFixed(2) + 'R', pct: pct == null ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%', cls: r >= 0 ? 'text-up' : 'text-down', title: 'Đã đóng' };
+      }
+      if (s.status === 'expired') return { r: '—', pct: 'không khớp', cls: 'text-muted', title: 'Lệnh limit hết hạn, không vào lệnh' };
+      const px = s.symbol === symbol.value && lastPrice.value != null ? lastPrice.value : s.mark;
+      if (px == null || !risk) return { r: '…', pct: '', cls: 'text-muted', title: 'Chờ lượt quét kế tiếp để có giá' };
+      if (s.status === 'pending') {
+        const d = (px - s.entry) / s.entry * 100 * bull;
+        return { r: 'chờ', pct: 'cách ' + Math.abs(d).toFixed(2) + '%', cls: 'text-sky-300', title: 'Giá hiện tại cách giá limit' };
+      }
+      const r = (px - s.entry) * bull / risk;
+      const pct = (px - s.entry) / s.entry * bull * 100;
+      return { r: (r >= 0 ? '+' : '') + r.toFixed(2) + 'R', pct: (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%', cls: r >= 0 ? 'text-up' : 'text-down',
+               title: 'Tạm tính theo giá ' + fmtPrice(px) + (s.mark_time && s.symbol !== symbol.value ? ' (' + timeAgo(s.mark_time) + ')' : ' (live)') };
+    }
+    const feed = ref([]);
+    const showOrig = reactive({});
+    const feedFilter = ref('Tất cả');
+    const feedCoinOnly = ref(false);
+    const feedSources = computed(() => ['Tất cả', ...new Set(feed.value.map((x) => x.source))]);
+    const filteredFeed = computed(() => feed.value.filter((x) => (feedFilter.value === 'Tất cả' || x.source === feedFilter.value) && (!feedCoinOnly.value || (x.coins && x.coins.length))));
+    async function loadFeed() {
+      try { feed.value = await (await fetch('/api/feed')).json(); } catch { return; }
+      // thay nội dung tiếng Anh của thông báo đã lưu bằng bản dịch (khi bản dịch có sau)
+      const byText = new Map(feed.value.filter((x) => x.text_vi).map((x) => [x.text.slice(0, 240), x.text_vi]));
+      let changed = false;
+      notifLog.value = notifLog.value.map((n) => {
+        if (n.kind !== 'news') return n;
+        const vi = (n.feedId && feed.value.find((x) => x.id === n.feedId)?.text_vi) || byText.get(n.body);
+        if (vi && n.body !== vi.slice(0, 240)) { changed = true; return { ...n, body: vi.slice(0, 240) }; }
+        return n;
+      });
+      if (changed) saveNotifs();
+    }
+    const SYS_NAMES = { pb4h: '🌀 PB H4', nr74h: '🧭 NR7 H4', bo4h: '💥 BO H4', st4h: '📈 ST H4', bo15: '💥 BO 1.5', st15: '📈 ST 1.5', news: '📰 News', vc4h: '🌋 VC H4' };
+    const sysName = (k) => SYS_NAMES[k] || k;
+    const NOTIF_KEY = 'smc_notif_log_v1';
+    const notifLog = ref((() => { try { return JSON.parse(localStorage.getItem(NOTIF_KEY) || '[]'); } catch { return []; } })());
+    const notifOpen = ref(false);
+    const notifFilter = ref('all');
+    const unreadCount = computed(() => notifLog.value.filter((n) => !n.read).length);
+    const filteredNotifs = computed(() => notifFilter.value === 'all' ? notifLog.value : notifLog.value.filter((n) => n.kind === notifFilter.value));
+    function saveNotifs() { try { localStorage.setItem(NOTIF_KEY, JSON.stringify(notifLog.value)); } catch {} }
+    function pushNotif(n) {
+      notifLog.value = [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Math.floor(Date.now() / 1000), read: notifOpen.value, ...n },
+                        ...notifLog.value].slice(0, 300);
+      saveNotifs();
+    }
+    function markAllRead() { notifLog.value = notifLog.value.map((n) => ({ ...n, read: true })); saveNotifs(); }
+    function clearNotifs() { notifLog.value = []; saveNotifs(); }
+    function openNotif(n) {
+      notifOpen.value = false;
+      if (n.ref?.type === 'strategy') {
+        const sig = findStrategySignal(n.ref.id);
+        if (sig) { rightTab.value = 'strategy'; strategyTab.value = sig.system; openStrategySignal(sig); }
+      } else if (n.ref?.type === 'zone') {
+        const a = zoneAlerts.value.find((x) => x.id === n.ref.id);
+        if (a) { rightTab.value = 'zone'; openZoneAlert(a); }
+      } else if (n.ref?.type === 'symbol') {
+        selectSymbol(n.ref.symbol);
+      } else if (n.ref?.type === 'signal' && n.ref.data) {
+        rightTab.value = 'alerts'; openSignal(n.ref.data);
+      }
+    }
+    function notifyGeneric(title, body, tag) {
+      if (!notifyOn.value || Notification.permission !== 'granted') return;
+      try {
+        const x = new Notification(title, { body, tag, silent: true, requireInteraction: true });
+        x.onclick = () => { window.focus(); notifOpen.value = true; x.close(); };
+      } catch {}
+    }
+    const statusLabel = (s) => ({ win: 'LỜI', loss: 'LỖ', pending: 'CHỜ KHỚP', expired: 'HẾT HẠN' }[s.status] || 'ĐANG MỞ');
+    const tradeR = (s) => (s.r != null ? s.r : s.status === 'win' ? s.rr : -1);
+    const fmtR = (s) => { const r = tradeR(s); return (r > 0 ? '+' : '') + (Math.round(r * 10) / 10); };
     function calcStats(list) {
       const wins = list.filter((s) => s.status === 'win').length;
       const losses = list.filter((s) => s.status === 'loss').length;
       const n = wins + losses;
-      const totalR = list.reduce((sum, s) => sum + (s.status === 'win' ? s.rr : -1), 0);
+      const totalR = list.reduce((sum, s) => sum + tradeR(s), 0);
       return { n, wins, losses, winrate: n ? (wins / n) * 100 : 0, totalR };
     }
     const logStats = computed(() => ({
       all: calcStats(closedTrades.value),
-      scalp: calcStats(closedTrades.value.filter((s) => s.system === 'scalp')),
-      swing: calcStats(closedTrades.value.filter((s) => s.system === 'swing')),
-      m1: calcStats(closedTrades.value.filter((s) => s.system === 'm1')),
-      nr7: calcStats(closedTrades.value.filter((s) => s.system === 'nr7')),
+      ...Object.fromEntries(Object.keys(strategySignals).map((k) => [k, calcStats(closedTrades.value.filter((s) => s.system === k))])),
     }));
     const selectedStrategyId = ref(null);
     const strategyLabels = ref([]);
@@ -427,6 +720,7 @@ createApp({
     // ───── Non-reactive objects (không để Vue proxy chart/websocket) ─────
     let chart = null, candleSeries = null, levelSeries = [];
     let sigWs = null, pingTimer = null, clockTimer = null, reconnectTimer = null;
+    let feedTimer = null;
     let loadSeq = 0, retry = 0, audioCtx = null, structureTimer = null;
 
     const COLORS = { up: '#0ecb81', down: '#f6465d', choch: '#a78bfa', gold: '#f0b90b' };
@@ -537,20 +831,25 @@ createApp({
       candleSeries.setMarkers(markers);
     }
 
-    async function fetchKlines() {
-      const r = await fetch(`/api/klines?symbol=${encodeURIComponent(symbol.value)}&timeframe=${timeframe.value}&limit=500`);
+    async function fetchKlines(sym = symbol.value, tf = timeframe.value) {
+      const r = await fetch(`/api/klines?symbol=${encodeURIComponent(sym)}&timeframe=${tf}&limit=500`, { cache: 'no-store' });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.detail || r.statusText);
       return data;
     }
+    // Chỉ áp dữ liệu nếu đúng coin + khung đang chọn (chặn response/luồng live của coin cũ đè lên chart)
+    const isCurrent = (sym, tf) => sym === symbol.value && tf === timeframe.value;
 
     async function loadChart({ focusTime = null } = {}) {
       const seq = ++loadSeq;
+      const sym = symbol.value, tf = timeframe.value;
       loading.value = true;
       chartError.value = '';
+      lastKlineTime = null; // chặn nến live cho tới khi dữ liệu mới đã được nạp
+      sendWatch();
       try {
-        const d = await fetchKlines();
-        if (seq !== loadSeq) return; // đã chuyển coin khác trong lúc chờ
+        const d = await fetchKlines(sym, tf);
+        if (seq !== loadSeq || !isCurrent(sym, tf) || d.symbol !== sym || d.timeframe !== tf) return; // đã chuyển coin/khung trong lúc chờ
         const last = d.candles.at(-1)?.close ?? 1;
         const precision = pricePrecision(last);
         candleSeries.applyOptions({ priceFormat: { type: 'price', precision, minMove: 1 / 10 ** precision } });
@@ -574,6 +873,9 @@ createApp({
         const sig = selectedStrategyId.value ? findStrategySignal(selectedStrategyId.value) : null;
         if (sig && sig.symbol === symbol.value) drawStrategyLines(sig);
         else { clearStrategyLines(); selectedStrategyId.value = null; }
+        const za = selectedZoneId.value ? zoneAlerts.value.find((x) => x.id === selectedZoneId.value) : null;
+        if (za && za.symbol === symbol.value) drawZone(za);
+        else { clearZoneLines(); selectedZoneId.value = null; }
       } catch (e) {
         if (seq === loadSeq) chartError.value = `Lỗi tải chart: ${e.message}`;
       } finally {
@@ -585,10 +887,10 @@ createApp({
     function refreshStructureSoon() {
       clearTimeout(structureTimer);
       structureTimer = setTimeout(async () => {
-        const seq = loadSeq;
+        const seq = loadSeq, sym = symbol.value, tf = timeframe.value;
         try {
-          const d = await fetchKlines();
-          if (seq === loadSeq) drawStructure(d.events, d.signals);
+          const d = await fetchKlines(sym, tf);
+          if (seq === loadSeq && isCurrent(sym, tf) && d.symbol === sym && d.timeframe === tf) drawStructure(d.events, d.signals);
         } catch {}
       }, 3000);
     }
@@ -602,8 +904,9 @@ createApp({
       }
     }
     function handleKlineMsg(msg) {
-      if (msg.symbol !== symbol.value || msg.timeframe !== timeframe.value) return;
+      if (!isCurrent(msg.symbol, msg.timeframe) || loading.value || lastKlineTime == null) return;
       for (const c of msg.candles) {
+        if (c.time < lastKlineTime) continue;
         try { candleSeries.update(c); } catch {}
         if (lastKlineTime != null && c.time > lastKlineTime) refreshStructureSoon();
         lastKlineTime = c.time;
@@ -614,7 +917,7 @@ createApp({
       // (throttle 2s/lần — vẽ lại toàn bộ series mỗi tick kline vừa tốn vừa dễ ra timing bug)
       if (selectedStrategyId.value && Date.now() - lastBoxRedrawAt > 2000) {
         const sig = findStrategySignal(selectedStrategyId.value);
-        if (sig && sig.symbol === symbol.value && sig.status === 'open') {
+        if (sig && sig.symbol === symbol.value && (sig.status === 'open' || sig.status === 'pending')) {
           lastBoxRedrawAt = Date.now();
           drawStrategyLines(sig);
         }
@@ -683,8 +986,52 @@ createApp({
     function openStrategyTab() { rightTab.value = 'strategy'; }
 
     function findStrategySignal(id) {
-      return strategySignals.scalp.find((x) => x.id === id) || strategySignals.swing.find((x) => x.id === id)
-        || strategySignals.m1.find((x) => x.id === id) || strategySignals.nr7.find((x) => x.id === id) || null;
+      return Object.values(strategySignals).flat().find((x) => x.id === id) || null;
+    }
+    function clearZoneLines() {
+      zoneLines.forEach((l) => { try { chart.removeSeries(l); } catch {} });
+      zoneLines = [];
+    }
+    // Hộp vùng (baseline neo ở đáy vùng, giá trị = đỉnh vùng) + đường đáy, kéo từ lúc vùng hình thành tới hiện tại.
+    function drawZone(a) {
+      clearZoneLines();
+      const t0 = a.zone_since, t1 = Math.max(Math.floor(Date.now() / 1000), t0 + 60);
+      const box = chart.addBaselineSeries({
+        baseValue: { type: 'price', price: a.zone_bottom },
+        topFillColor1: 'rgba(240,185,11,0.28)', topFillColor2: 'rgba(240,185,11,0.10)', topLineColor: '#f0b90b',
+        bottomFillColor1: 'rgba(0,0,0,0)', bottomFillColor2: 'rgba(0,0,0,0)', bottomLineColor: 'rgba(0,0,0,0)',
+        lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+      });
+      box.setData([{ time: t0, value: a.zone_top }, { time: t1, value: a.zone_top }]);
+      const bot = chart.addLineSeries({ color: '#f0b90b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+      bot.setData([{ time: t0, value: a.zone_bottom }, { time: t1, value: a.zone_bottom }]);
+      zoneLines = [box, bot];
+    }
+    async function openZoneAlert(a) {
+      ensureSymbol(a.symbol);
+      symbol.value = a.symbol;
+      timeframe.value = a.timeframe;
+      selectedStrategyId.value = null;
+      clearStrategyLines();
+      selectedZoneId.value = a.id;
+      await loadChart({ focusTime: a.zone_since });
+    }
+    function upsertZoneAlert(a) {
+      if (zoneAlerts.value.some((x) => x.id === a.id)) return false;
+      zoneAlerts.value = [a, ...zoneAlerts.value].slice(0, 200);
+      return true;
+    }
+    function notifyZoneDesktop(a) {
+      if (!notifyOn.value || Notification.permission !== 'granted') return;
+      try {
+        const up = a.direction === 'bullish';
+        const n = new Notification(`🧭 ${a.symbol} ${a.timeframe.toUpperCase()} · Bias ${up ? 'TĂNG' : 'GIẢM'} · hồi về ${a.kinds.join('+')}`, {
+          body: `Vùng ${fmtPrice(a.zone_bottom)} – ${fmtPrice(a.zone_top)} · giá ${fmtPrice(a.price)}. Chờ CHoCH / engulfing / pin ở M1–M15.`,
+          tag: a.id,
+          silent: true, requireInteraction: true,
+        });
+        n.onclick = () => { window.focus(); rightTab.value = 'zone'; openZoneAlert(a); n.close(); };
+      } catch {}
     }
     function clearStrategyLines() {
       strategyLines.forEach((l) => { try { chart.removeSeries(l); } catch {} });
@@ -703,14 +1050,14 @@ createApp({
       const rect = chartEl.value.getBoundingClientRect();
       const bull = s.direction === 'bullish';
       const pct = (p) => (bull ? (p - s.entry) / s.entry : (s.entry - p) / s.entry) * 100;
-      const statusText = s.status === 'win' ? 'LỜI' : s.status === 'loss' ? 'LỖ' : 'ĐANG MỞ';
+      const statusText = statusLabel(s);
       const rows = [
-        { key: 'tp', price: s.tp, bg: COLORS.up, fg: '#06251b',
-          text: `TP ${pct(s.tp) >= 0 ? '+' : ''}${pct(s.tp).toFixed(1)}% · ${fmtPrice(s.tp)}` },
+        ...(s.tp ? [{ key: 'tp', price: s.tp, bg: COLORS.up, fg: '#06251b',
+          text: `TP ${pct(s.tp) >= 0 ? '+' : ''}${pct(s.tp).toFixed(1)}% · ${fmtPrice(s.tp)}` }] : []),
         { key: 'entry', price: s.entry, bg: COLORS.gold, fg: '#2b2200',
-          text: `Entry · RR 1:${s.rr} · ${statusText}` },
+          text: `${s.order === 'limit' ? 'Limit' : 'Entry'} · ${s.trail ? 'Trail ' + s.trail + 'R' : 'RR 1:' + s.rr} · ${statusText}` },
         { key: 'sl', price: s.sl, bg: COLORS.down, fg: '#2b0b0f',
-          text: `SL ${pct(s.sl).toFixed(1)}% · ${fmtPrice(s.sl)}` },
+          text: `${s.trail ? 'Stop' : 'SL'} ${pct(s.sl) >= 0 ? '+' : ''}${pct(s.sl).toFixed(1)}% · ${fmtPrice(s.sl)}` },
       ];
       strategyLabels.value = rows
         .map((r) => {
@@ -749,19 +1096,20 @@ createApp({
         box.setData([{ time: t0, value }, { time: t1, value }]);
         return box;
       };
-      const targetBox = mkBox(s.tp, s.tp > s.entry, '14,203,129', COLORS.up);
       const stopBox = mkBox(s.sl, s.sl > s.entry, '246,70,93', COLORS.down);
-      strategyLines = [targetBox, stopBox];
+      strategyLines = s.tp ? [mkBox(s.tp, s.tp > s.entry, '14,203,129', COLORS.up), stopBox] : [stopBox];
 
       // rAF: đợi chart render xong 1 frame rồi mới đọc toạ độ pixel, tránh timeToCoordinate/
       // priceToCoordinate trả về null vì đọc ngay lúc series vừa setData chưa kịp cập nhật layout.
       requestAnimationFrame(() => positionStrategyLabels(s));
     }
     async function openStrategySignal(s) {
+      selectedZoneId.value = null;
       ensureSymbol(s.symbol);
       symbol.value = s.symbol;
       timeframe.value = s.timeframe;
       await loadChart({ focusTime: s.entry_time });
+      if (!isCurrent(s.symbol, s.timeframe)) return; // người dùng đã chuyển coin/khung khác trong lúc tải
       selectedStrategyId.value = s.id;
       drawStrategyLines(s);
     }
@@ -803,7 +1151,7 @@ createApp({
         const n = new Notification(`${sig.symbol} ${sig.timeframe} · ${bull ? '📈 Bullish' : '📉 Bearish'} CHoCH→BoS`, {
           body: `Giá: ${fmtPrice(sig.price)}`,
           tag: sig.id,
-          silent: true, // đã có âm báo riêng qua beep()
+          silent: true, requireInteraction: true, // đã có âm báo riêng qua beep()
         });
         n.onclick = () => { window.focus(); openSignal(sig); n.close(); };
       } catch {}
@@ -812,13 +1160,13 @@ createApp({
       if (!notifyOn.value || Notification.permission !== 'granted') return;
       try {
         const bull = sig.direction === 'bullish';
-        const sysLabel = sig.system === 'scalp' ? '⚡ Scalp' : sig.system === 'swing' ? '📈 Swing' : sig.system === 'nr7' ? '📐 NR7' : '🎯 M1';
+        const sysLabel = sig.system === 'pb4h' ? '🌀 PB H4' : sig.system === 'nr74h' ? '🧭 NR7 H4' : sig.system === 'bo4h' ? '💥 BO H4' : sig.system === 'st4h' ? '📈 ST H4' : sig.system === 'bo15' ? '💥 BO 1.5' : '📈 ST 1.5';
         const n = new Notification(
           `${sysLabel} · ${sig.symbol} ${sig.timeframe} · ${bull ? '▲ Bullish' : '▼ Bearish'}`,
           {
-            body: `Entry ${fmtPrice(sig.entry)} · SL ${fmtPrice(sig.sl)} · TP ${fmtPrice(sig.tp)} · RR 1:${sig.rr}`,
+            body: `${sig.order === 'limit' ? 'LIMIT (chờ giá hồi, hết hạn 24h)' : 'Entry'} ${fmtPrice(sig.entry)} · SL ${fmtPrice(sig.sl)} · ` + (sig.tp ? `TP ${fmtPrice(sig.tp)} · RR 1:${sig.rr}` : `Trailing ${sig.trail}R`),
             tag: sig.id,
-            silent: true, // đã có âm báo riêng qua beep()
+            silent: true, requireInteraction: true, // đã có âm báo riêng qua beep()
           },
         );
         n.onclick = () => { window.focus(); openStrategySignal(sig); n.close(); };
@@ -854,20 +1202,71 @@ createApp({
           setTimeout(() => delete flashIds[s.id], 3000);
           beep(s.direction === 'bullish');
           notifyDesktop(s);
+          pushNotif({ kind: 'signal', tone: s.direction === 'bullish' ? 'up' : 'down',
+                      title: `${s.symbol} ${s.timeframe} · ${s.direction === 'bullish' ? '▲' : '▼'} CHoCH→BoS`,
+                      body: `Giá ${fmtPrice(s.price)}`, ref: { type: 'signal', data: s } });
           if (s.symbol === symbol.value && s.timeframe === timeframe.value) refreshStructureSoon();
         } else if (msg.type === 'kline') {
           handleKlineMsg(msg);
         } else if (msg.type === 'strategy_history') {
-          strategySignals.scalp = msg.data.scalp || [];
-          strategySignals.swing = msg.data.swing || [];
-          strategySignals.m1 = msg.data.m1 || [];
-          strategySignals.nr7 = msg.data.nr7 || [];
+          strategySignals.pb4h = msg.data.pb4h || [];
+          strategySignals.nr74h = msg.data.nr74h || [];
+          strategySignals.bo4h = msg.data.bo4h || [];
+          strategySignals.st4h = msg.data.st4h || [];
+          strategySignals.bo15 = msg.data.bo15 || [];
+          strategySignals.st15 = msg.data.st15 || [];
+          strategySignals.news = msg.data.news || [];
+          strategySignals.vc4h = msg.data.vc4h || [];
+        } else if (msg.type === 'zone_history') {
+          zoneAlerts.value = msg.data || [];
+        } else if (msg.type === 'zone_alert') {
+          if (upsertZoneAlert(msg.data)) {
+            beep(msg.data.direction === 'bullish');
+            notifyZoneDesktop(msg.data);
+            const a = msg.data;
+            pushNotif({ kind: 'zone', tone: a.direction === 'bullish' ? 'up' : 'down',
+                        title: `🧭 ${a.symbol} ${a.timeframe.toUpperCase()} · bias ${a.direction === 'bullish' ? 'TĂNG' : 'GIẢM'} · hồi về ${(a.kinds || []).join('+')}`,
+                        body: `Vùng ${fmtPrice(a.zone_bottom)} – ${fmtPrice(a.zone_top)} · giá ${fmtPrice(a.price)}`, ref: { type: 'zone', id: a.id } });
+          }
         } else if (msg.type === 'strategy_signal') {
           upsertStrategySignal(msg.data);
           beep(msg.data.direction === 'bullish');
           notifyStrategyDesktop(msg.data);
+          const g = msg.data;
+          pushNotif({ kind: 'strategy', tone: g.direction === 'bullish' ? 'up' : 'down',
+                      title: `${sysName(g.system)} · ${g.symbol} · ${g.direction === 'bullish' ? '▲ MUA' : '▼ BÁN'} · ${statusLabel(g)}`,
+                      body: `${g.order === 'limit' ? 'Limit' : 'Entry'} ${fmtPrice(g.entry)} · SL ${fmtPrice(g.sl)} · TP ${g.tp ? fmtPrice(g.tp) : '—'} · RR 1:${g.rr ?? '—'}`,
+                      ref: { type: 'strategy', id: g.id } });
+        } else if (msg.type === 'feed_item') {
+          const it = msg.data;
+          feed.value = [it, ...feed.value.filter((x) => x.id !== it.id)].slice(0, 300);
+          if (it.hot) {
+            pushNotif({ kind: 'news', tone: 'gold', title: `📡 ${it.source} · ${it.coins.map((c) => c.replace('USDT', '')).join(', ')} (bạn đang có lệnh)`,
+                        body: (it.text_vi || it.text).slice(0, 240), feedId: it.id, ref: { type: 'symbol', symbol: it.coins[0] } });
+            notifyGeneric(`📡 ${it.source}: ${it.coins.map((c) => c.replace('USDT', '')).join(', ')}`, (it.text_vi || it.text).slice(0, 200), it.id);
+          }
+        } else if (msg.type === 'news_alert') {
+          const a = msg.data;
+          const risky = ['MONITOR', 'DELIST', 'FUT_DELIST'].includes(a.kind);
+          pushNotif({ kind: 'news', tone: risky ? 'down' : 'gold', title: `📰 ${a.label} · ${a.ticker}${a.symbol ? '' : ' (không có perp)'}`,
+                      body: `${a.title_vi || a.title} — ${a.stats}`, ref: a.symbol ? { type: 'symbol', symbol: a.symbol } : null });
+          notifyGeneric(`📰 ${a.label} · ${a.ticker}`, a.title_vi || a.title, a.id);
+          beep(!risky);
         } else if (msg.type === 'strategy_update') {
-          upsertStrategySignal(msg.data);
+          const g = msg.data;
+          const prev = (strategySignals[g.system] || []).find((x) => x.id === g.id);
+          upsertStrategySignal(g);
+          if (prev && prev.status !== g.status) {
+            const txt = { open: 'ĐÃ KHỚP lệnh', win: `LỜI ${fmtR(g)}R`, loss: `LỖ ${fmtR(g)}R`, expired: 'HẾT HẠN (không khớp)' }[g.status] || g.status;
+            const tone = g.status === 'win' ? 'up' : g.status === 'loss' ? 'down' : 'gold';
+            const n = { kind: 'strategy', tone, title: `${sysName(g.system)} · ${g.symbol} · ${txt}`,
+                        body: g.status === 'open' ? `Khớp ${fmtPrice(g.entry)} · SL ${fmtPrice(g.sl)} · TP ${fmtPrice(g.tp)}`
+                              : g.exit_price != null ? `Thoát ${fmtPrice(g.exit_price)} (vào ${fmtPrice(g.entry)})` : `Limit ${fmtPrice(g.entry)}`,
+                        ref: { type: 'strategy', id: g.id } };
+            pushNotif(n);
+            notifyGeneric(n.title, n.body, g.id);
+            if (g.status === 'win' || g.status === 'loss') beep(g.status === 'win');
+          }
         }
       };
       ws.onclose = () => {
@@ -893,12 +1292,14 @@ createApp({
       loadChart();
       connectSignals();
       loadScreener();
+      loadFeed();
+      feedTimer = setInterval(loadFeed, 120000);
       clockTimer = setInterval(() => (now.value = Date.now()), 15000);
     });
 
     onBeforeUnmount(() => {
       const ws = sigWs; sigWs = null; ws?.close();
-      [pingTimer, clockTimer].forEach(clearInterval);
+      [pingTimer, clockTimer, feedTimer].forEach(clearInterval);
       [reconnectTimer, structureTimer].forEach(clearTimeout);
       chart?.remove();
     });
@@ -908,10 +1309,10 @@ createApp({
       filteredSignals, wsState, status, lastPrice, priceDir, loading, chartError, selectedId, flashIds, soundOn,
       notifyOn, notifyPermission, rightTab, screener, screenerLoading, intradayHours,
       strategy, strategyTab, strategySignals, selectedStrategyId, strategyLabels, closedTrades, logStats,
-      fmtPrice, fmtClock, fmtDate, timeAgo,
+      fmtPrice, fmtClock, fmtDate, timeAgo, fmtR,
       selectSymbol, selectTimeframe, applyCustom, openSignal, sendTest, toggleNotify,
       openScreenerTab, openScreenerRow, loadScreener,
-      toggleStrategy, openStrategyTab, openStrategySignal,
+      toggleStrategy, openStrategyTab, statusLabel, feed, showOrig, feedFilter, feedCoinOnly, feedSources, filteredFeed, loadFeed, notifLog, notifOpen, notifFilter, unreadCount, filteredNotifs, markAllRead, clearNotifs, openNotif, screenerMode, volwatch, loadVolwatch, openVolRow, pnl, openStrategySignal, zoneAlerts, selectedZoneId, openZoneAlert,
     };
   },
 }).mount('#app');

@@ -6,12 +6,15 @@ Chạy:  python main.py      (hoặc: uvicorn main:app --host 0.0.0.0 --port 800
 Mở:    http://localhost:8000
 """
 import asyncio
+import math
+import re
 import json
 import logging
 import os
 import sys
 import time
 import uuid
+from functools import partial
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
@@ -49,6 +52,7 @@ except ImportError:
     pass
 
 from smartmoneyconcepts import smc
+from fvg_filter import find_valid_fvgs
 
 # ─────────────────────────── Config (.env) ───────────────────────────
 SYMBOLS = [s.strip().upper() for s in os.getenv(
@@ -74,31 +78,116 @@ SCREENER_INTRADAY_TIMEFRAME = os.getenv("SCREENER_INTRADAY_TIMEFRAME", "1h")
 SCREENER_INTRADAY_LOOKBACK = int(os.getenv("SCREENER_INTRADAY_LOOKBACK", "48"))  # số nến 1h nhìn lại (~2 ngày)
 SCREENER_DAILY_WEIGHT = float(os.getenv("SCREENER_DAILY_WEIGHT", "0.55"))
 
-# Scalp/Swing strategy engine — entry theo vùng Order Block (H4/D1 bias) + lọc VWAP,
-# đã kiểm chứng qua backtest (xem lịch sử chat) là tổ hợp có edge thật, RR ép cứng.
-SCALP_RR = float(os.getenv("SCALP_RR", "2"))
-SWING_RR = float(os.getenv("SWING_RR", "3"))
-SCALP_INTERVAL = int(os.getenv("SCALP_INTERVAL", "45"))
-SWING_INTERVAL = int(os.getenv("SWING_INTERVAL", "240"))
-STRAT_SL_BUFFER = float(os.getenv("STRAT_SL_BUFFER", "0.0015"))
-STRAT_MAX_RISK_PCT = float(os.getenv("STRAT_MAX_RISK_PCT", "0.08"))
-
-# M1 Entry — thuần price action (không SMC zone, không VWAP): 1H bias -> 5M break-of-structure
-# cùng hướng -> chờ giá hồi đúng mức đó -> entry bằng nến xác nhận (engulfing/wick dài) trên M1.
-M1_RR = float(os.getenv("M1_RR", "2"))
-M1_INTERVAL = int(os.getenv("M1_INTERVAL", "30"))
-M1_SWING_1H = int(os.getenv("M1_SWING_1H", "8"))
-M1_SWING_5M = int(os.getenv("M1_SWING_5M", "6"))
-M1_RETEST_WINDOW_MIN = int(os.getenv("M1_RETEST_WINDOW_MIN", "300"))
-M1_RETEST_TOLERANCE = float(os.getenv("M1_RETEST_TOLERANCE", "0.0015"))
-M1_SL_BUFFER = float(os.getenv("M1_SL_BUFFER", "0.0015"))
-
-# NR7 H1 — phá vỡ nến co hẹp nhất 7 nến trên khung H1. Backtest 3 năm/16 coin: edge dương mỏng nhưng nhất quán
-# (RR 1:5 ~ +0.07R, RR 1:8 ~ +0.11R gross), thắng chỉ ~18% (RR5) / ~12% (RR8) nên phải chịu được chuỗi thua dài.
-NR7_RR = float(os.getenv("NR7_RR", "5"))
-NR7_INTERVAL = int(os.getenv("NR7_INTERVAL", "120"))
+# Giới hạn rủi ro dùng chung cho NR7 H4 (SL = đầu kia nến NR7).
 NR7_MIN_RISK = float(os.getenv("NR7_MIN_RISK", "0.003"))
 NR7_MAX_RISK = float(os.getenv("NR7_MAX_RISK", "0.06"))
+
+# H4 Pullback: xu hướng EMA50/EMA200, giá đóng cửa lại trên/dưới EMA20 sau khi nằm phía ngược lại. Thoát bằng trailing stop
+# (stop = giá đóng tốt nhất -/+ PB_TRAIL x rủi ro ban đầu). Edge nhỏ (~+0.1R) nhưng cùng dấu ở cả 16 coin gốc lẫn 24 coin mới.
+PB_TRAIL = float(os.getenv("PB_TRAIL", "3"))
+PB_INTERVAL = int(os.getenv("PB_INTERVAL", "300"))
+PB_SL_BARS = int(os.getenv("PB_SL_BARS", "10"))
+PB_MIN_RISK = float(os.getenv("PB_MIN_RISK", "0.003"))
+PB_MAX_RISK = float(os.getenv("PB_MAX_RISK", "0.10"))
+# Filter đã kiểm chứng trên 16 coin gốc + 24 coin ngoài mẫu (5 năm H4): xu hướng còn "non" (tuổi EMA50>EMA200 <= 141 nến), giá chưa bị
+# kéo xa EMA200 (<= 4.97 ATR) và nến xác nhận có thân (>= 43% biên độ). Nâng edge từ ~+0.12R lên ~+0.30R (TP 8R). Nửa sau của mẫu yếu hơn nửa đầu.
+PB_MAX_AGE = int(os.getenv("PB_MAX_AGE", "141"))
+PB_MAX_DIST200 = float(os.getenv("PB_MAX_DIST200", "4.97"))
+PB_MIN_BODY = float(os.getenv("PB_MIN_BODY", "0.43"))
+PB_EXIT = os.getenv("PB_EXIT", "tp")  # "tp" = TP cố định PB_RR; "trail" = trailing stop PB_TRAIL R
+PB_RR = float(os.getenv("PB_RR", "8"))
+
+# NR7 H4 + xu hướng H4: chỉ theo hướng EMA50/EMA200 H4 và giá đóng cùng phía EMA20. TP 5R: +0.14R/lệnh (16 coin gốc +0.17, 24 coin mới +0.13).
+NR74_RR = float(os.getenv("NR74_RR", "5"))
+NR74_INTERVAL = int(os.getenv("NR74_INTERVAL", "300"))
+
+# Breakout H4 (vào ngay khi nến đóng phá vỡ) + filter đã kiểm chứng trên 40 coin: volume, BTC cùng hướng, giá cùng phía EMA200, phá xa biên, biến
+# động không bị nén. TP 5R: ~+0.23R/lệnh (16 coin gốc +0.24, 24 coin mới +0.22). Ngưỡng chọn từ bảng phân bố của cả 40 coin.
+# Supertrend flip H4 + xu hướng: Supertrend (hl2 +- 3 x ATR14) đổi hướng, chỉ giao dịch thuận EMA50/EMA200 H4; entry giá đóng, SL = 2 ATR14, TP 1:3.
+# Giải đấu 30 phương pháp trên 98 coin: +0.16R (40 coin huấn luyện) và +0.20R (58 coin holdout, 81% coin dương). Tương quan với Breakout H4 (cùng họ xu hướng).
+ST_RR = float(os.getenv("ST_RR", "8"))
+# Lệnh LIMIT chờ giá hồi (nghiên cứu entry/SL 98 coin, 5 năm, kiểm chứng train 40 coin + holdout 58 coin):
+#   PB: limit close -/+ 1 ATR, SL 2 ATR, TP 8R   (+0.27/+0.23R -> +0.40/+0.39R)
+#   ST: limit close -/+ 0.25 ATR, SL 1 ATR, TP 8R (+0.21/+0.26R -> +0.31/+0.36R)
+#   BO: limit close -/+ 0.5 ATR, SL cực trị 10 nến -/+ 0.1 ATR, TP 5R (+0.20/+0.31R -> +0.39/+0.34R)
+# Lệnh chờ hiệu lực LIMIT_BARS nến H4; không khớp -> "expired" (không tính vào win rate). ATR = Wilder 14.
+LIMIT_BARS = int(os.getenv("LIMIT_BARS", "6"))
+PB_ENTRY_ATR = float(os.getenv("PB_ENTRY_ATR", "1.0"))
+PB_SL_ATR = float(os.getenv("PB_SL_ATR", "2.0"))
+ST4_ENTRY_ATR = float(os.getenv("ST4_ENTRY_ATR", "0.25"))
+ST4_SL_ATR = float(os.getenv("ST4_SL_ATR", "1.0"))
+BO_ENTRY_ATR = float(os.getenv("BO_ENTRY_ATR", "0.5"))
+BO_SL_BARS = int(os.getenv("BO_SL_BARS", "10"))
+# Nghiên cứu bối cảnh (98 coin, train/holdout): lệnh thắng nhiều hơn khi coin CHƯA vượt trội BTC theo hướng lệnh trong 30 ngày
+# (mua coin tụt lại BTC / bán coin mạnh hơn BTC). BO: E +0.39/+0.34R -> +0.57/+0.82R, lãi/sụt giảm 1.19 -> 1.78.
+BO_MAX_RS = float(os.getenv("BO_MAX_RS", "0.03"))
+# Thoát theo thời gian: breakout không chạy được 1R sau 12 nến H4 (2 ngày) kể từ khi khớp -> đóng ở giá đóng. Backtest: win 30% -> 41%,
+# sụt giảm tối đa 95R -> 46R, lãi/sụt giảm 1.98 -> 3.74, R/năm 193 -> 172.
+BO_TSTOP = int(os.getenv("BO_TSTOP", "12"))
+# Volume Capitulation (VC H4): BÁN TIẾP ĐÀ khi nến H4 đóng lúc 16:00/20:00 UTC, volume > 3x TB 20 nến trước, 3 nến GIẢM liên tiếp.
+# (Chiều ngược lại - mua khi bơm có volume - ~0R.)
+# Tìm bằng quét ~53k tổ hợp chỉ báo, chọn trên 40 coin, kiểm định 58 coin holdout: TP1.5/SL1.5 ATR, giữ tối đa 18 nến (3 ngày):
+# win 67%, +0.33R/lệnh (train +0.34 / holdout +0.32, coin lớn +0.28 / alt +0.34, dương 6/6 năm, t=3.7); bán ngẫu nhiên cùng thoát chỉ +0.02R.
+VC_TP_ATR = float(os.getenv("VC_TP_ATR", "1.5"))
+VC_SL_ATR = float(os.getenv("VC_SL_ATR", "1.5"))
+VC_HOLD = int(os.getenv("VC_HOLD", "18"))
+VC_VOLX = float(os.getenv("VC_VOLX", "3.0"))
+# Lọc chỉ báo thêm (thử RSI/BB/MACD/Stoch/ADX trên chính các lệnh của hệ thống, train 40 coin + holdout 58 coin):
+#   PB: bỏ khi dải Bollinger quá hẹp (độ rộng < phân vị 33 của 100 nến) -> E +0.69/+0.70R thành +1.07/+1.07R, lãi/sụt giảm 1.84 -> 2.38
+#   ST: bỏ khi Stochastic đã quá cực đoan theo hướng lệnh -> E +0.56/+0.81R thành +0.74/+1.05R, lãi/sụt giảm 1.91 -> 2.45, tốt hơn ở cả 6 năm
+#   BO: cần ADX >= 19 (có xu hướng thật) -> E +0.46/+0.75R thành +0.58/+0.91R, lãi/sụt giảm 3.74 -> 4.15
+#   VC: không chỉ báo nào cải thiện -> giữ nguyên.
+PB_MIN_BBW_PCTL = float(os.getenv("PB_MIN_BBW_PCTL", "0.33"))
+ST_MAX_STOCH = float(os.getenv("ST_MAX_STOCH", "87"))
+BO_MIN_ADX = float(os.getenv("BO_MIN_ADX", "19"))
+
+
+def bb_width_pctl(c: np.ndarray, i: int, n: int = 20, look: int = 100) -> float:
+    """Phân vị (0-1) của độ rộng dải Bollinger hiện tại so với `look` nến gần nhất."""
+    s_ = pd.Series(c)
+    w = (4 * s_.rolling(n).std() / s_.rolling(n).mean()).to_numpy()
+    seg = w[max(i - look + 1, 0):i + 1]
+    seg = seg[~np.isnan(seg)]
+    return float((seg <= w[i]).mean()) if len(seg) and not np.isnan(w[i]) else 1.0
+
+
+def stoch_k(h: np.ndarray, l: np.ndarray, c: np.ndarray, i: int, n: int = 14, smooth: int = 3) -> float:
+    ll = pd.Series(l).rolling(n).min()
+    hh = pd.Series(h).rolling(n).max()
+    k = (100 * (pd.Series(c) - ll) / (hh - ll + 1e-12)).rolling(smooth).mean().to_numpy()
+    return float(k[i]) if not np.isnan(k[i]) else 50.0
+
+
+def adx14(h: np.ndarray, l: np.ndarray, c: np.ndarray, i: int) -> float:
+    atr = wilder_atr(h, l, c)
+    up = np.maximum(h - np.r_[h[0], h[:-1]], 0)
+    dn = np.maximum(np.r_[l[0], l[:-1]] - l, 0)
+    f = lambda x: pd.Series(x).ewm(alpha=1 / 14, adjust=False).mean().to_numpy()  # noqa: E731
+    pdi, mdi = 100 * f(np.where(up > dn, up, 0)) / atr, 100 * f(np.where(dn > up, dn, 0)) / atr
+    a = f(100 * abs(pdi - mdi) / (pdi + mdi + 1e-12))
+    return float(a[i]) if not np.isnan(a[i]) else 0.0
+# BO: lệnh BÁN gần như không có lãi (+0.02/+0.16R, +7R/năm) -> chỉ MUA.
+BO_LONG_ONLY = os.getenv("BO_LONG_ONLY", "1") == "1"
+BO_TMFE = float(os.getenv("BO_TMFE", "1.0"))
+# Supertrend H4: lệnh MUA âm ở cả train (-0.10R) lẫn holdout (-0.09R) và 5/6 năm; chỉ BÁN: +0.55/+0.59R.
+ST4_SHORT_ONLY = os.getenv("ST4_SHORT_ONLY", "1") == "1"
+ST_INTERVAL = int(os.getenv("ST_INTERVAL", "300"))
+ST_SL_ATR = float(os.getenv("ST_SL_ATR", "2"))
+ST_MIN_RISK = float(os.getenv("ST_MIN_RISK", "0.003"))
+ST_MAX_RISK = float(os.getenv("ST_MAX_RISK", "0.12"))
+# TP 8R: với entry limit -0.5 ATR + lọc sức mạnh tương đối, 8R > 5R ở cả train (+0.78 vs +0.60R) và holdout (+1.04 vs +0.75R), lãi/sụt giảm 2.39 vs 1.64.
+BO_RR = float(os.getenv("BO_RR", "8"))
+# Bản RR thấp của Breakout H4 / Supertrend H4 (cùng tín hiệu, TP 1:1.5): thắng ~45% (hoà vốn 40%), kỳ vọng ~ +0.13R/lệnh ở 58 coin holdout
+# (Breakout +0.135R, Supertrend +0.123R) — đường vốn mượt hơn nhưng kỳ vọng mỗi lệnh chỉ khoảng một nửa bản RR cao.
+BO15_RR = float(os.getenv("BO15_RR", "1.5"))
+ST15_RR = float(os.getenv("ST15_RR", "1.5"))
+BO_INTERVAL = int(os.getenv("BO_INTERVAL", "300"))
+BO_BOX = int(os.getenv("BO_BOX", "20"))
+BO_MIN_VOLX = float(os.getenv("BO_MIN_VOLX", "1.235"))
+BO_MIN_BRK = float(os.getenv("BO_MIN_BRK", "0.63"))
+BO_MIN_DIST200 = float(os.getenv("BO_MIN_DIST200", "0.11"))
+BO_MIN_ATR_RATIO = float(os.getenv("BO_MIN_ATR_RATIO", "0.73"))
+BO_MIN_BODY = float(os.getenv("BO_MIN_BODY", "0.6"))
 
 ALLOWED_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
 TF_SECONDS = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
@@ -122,9 +211,30 @@ screener_state: dict = {
     "max_price": SCREENER_MAX_PRICE, "interval_s": SCREENER_INTERVAL,
     "intraday_lookback_h": SCREENER_INTRADAY_LOOKBACK,
 }
-strategy_enabled: dict = {"scalp": True, "swing": True, "m1": True, "nr7": True}
-strategy_signals: dict[str, deque] = {"scalp": deque(maxlen=100), "swing": deque(maxlen=100), "m1": deque(maxlen=100), "nr7": deque(maxlen=100)}
+STRATEGY_SYSTEMS = ("pb4h", "nr74h", "bo4h", "st4h", "bo15", "st15", "news", "vc4h")
+strategy_enabled: dict = {**{k: True for k in STRATEGY_SYSTEMS}, "zone": True, "ny": True}  # "zone" = cảnh báo vùng HTF (không phải chiến lược vào lệnh)
+strategy_enabled["nr74h"] = False  # NR7 H4: backtest ~0R, tắt mặc định
+# "ny" = chỉ nhận tín hiệu khi nến H4 đóng lúc 16:00/20:00 UTC (phiên New York). Backtest 98 coin: PB +0.22R -> +0.46R, BO +0.25R -> +0.35R, ST +0.24R -> +0.34R.
+# BO H4 không dùng lọc NY: nghiên cứu bối cảnh cho thấy lọc giờ làm BO xấu đi (lãi/sụt giảm 1.19 -> 0.68); BO dùng lọc sức mạnh tương đối thay thế.
+NY_SYSTEMS = ("pb4h", "st4h", "bo15", "st15")
+NY_HOURS = (16, 20)
+strategy_signals: dict[str, deque] = {k: deque(maxlen=100) for k in STRATEGY_SYSTEMS}
 strategy_seen: set[str] = set()
+# Đồng thuận: tín hiệu chỉ hợp lệ khi >= CONSENSUS_FRAC số coin đang quét (khác coin này) cũng có tín hiệu CÙNG hệ thống, CÙNG hướng trong 24h.
+# Backtest (cấu hình đang chạy, train/holdout): lệnh đơn lẻ ~0R (PB +0.33/-0.08, BO +0.02/+0.07, ST +0.21/+0.10), lệnh có đồng thuận
+# PB +0.81/+0.94, BO +0.63/+0.94, ST +0.63/+0.95; bỏ ~25% lệnh, lợi nhuận/năm gần như không đổi, lãi/sụt giảm BO 3.7 -> 5.7, ST 1.9 -> 2.4.
+CONSENSUS_SYSTEMS = tuple(x for x in os.getenv("CONSENSUS_SYSTEMS", "pb4h,bo4h,st4h").split(",") if x)
+CONSENSUS_FRAC = float(os.getenv("CONSENSUS_FRAC", "0.03"))
+CONSENSUS_WINDOW = 6 * 14400
+raw_signals: dict[str, dict] = {}
+consensus_skipped: set[str] = set()
+news_flags: dict[str, dict] = {}   # symbol perp -> tin rủi ro gần nhất (Monitoring / huỷ niêm yết) -> chặn lệnh MUA 30 ngày
+NEWS_BLOCK_DAYS = 30
+NEWS_SL_PCT = float(os.getenv("NEWS_SL_PCT", "10"))
+NEWS_HOLD_H = int(os.getenv("NEWS_HOLD_H", "24"))
+NEWS_MAX_AGE_MIN = 30   # chỉ vào lệnh nếu phát hiện tin trong 30 phút sau khi đăng
+btc_h4_r30: dict[int, float] = {}  # ts nến H4 BTC -> lợi nhuận 180 nến (30 ngày) của BTC, dùng cho lọc sức mạnh tương đối của BO H4
+btc_h4_regime: dict[int, int] = {}  # ts nến H4 BTC -> +1 nếu đóng trên EMA200, -1 nếu dưới (dùng làm filter cho Breakout H4)
 
 
 def save_strategy_state():
@@ -415,6 +525,184 @@ async def screener_scan():
               len(rows), len(candidates), SCREENER_MAX_PRICE, rows[0]["score"] if rows else 0)
 
 
+volwatch_state: dict = {"updated_at": None, "scanned": 0, "results": [], "interval_s": 3600}
+volwatch_exchange: "ccxt.binanceusdm | None" = None
+
+
+async def volwatch_loop():
+    import volwatch
+    while True:
+        try:
+            volwatch_state.update(await volwatch.scan(volwatch_exchange, log))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Volwatch loop lỗi")
+        await asyncio.sleep(volwatch_state["interval_s"])
+
+
+# ─────────────────────────── News (thông báo Binance) ───────────────────────────
+news_seen: set[str] = set()
+
+
+def _perp_of(ticker: str) -> str | None:
+    for cand in (f"{ticker}USDT", f"1000{ticker}USDT"):
+        m = exchange.markets_by_id.get(cand) if exchange and exchange.markets_by_id else None
+        if m:
+            m = m[0] if isinstance(m, list) else m
+            if m.get("active") and m.get("swap"):
+                return cand
+    return None
+
+
+async def news_update_open():
+    """Lệnh News: BÁN, SL +NEWS_SL_PCT%, đóng sau NEWS_HOLD_H giờ ở giá hiện tại."""
+    for sig in list(strategy_signals["news"]):
+        if sig["status"] != "open":
+            continue
+        try:
+            df = await fetch_ohlc(sig["symbol"], "5m", 400)
+        except Exception:
+            continue
+        sub = df[df["ts"] >= sig["entry_time"]]
+        mark = float(df["close"].iloc[-1])
+        hit = sub[sub["high"] >= sig["sl"]]
+        exit_px = exit_t = None
+        if len(hit):
+            exit_px, exit_t = sig["sl"], int(hit["ts"].iloc[0])
+        elif time.time() >= sig["exit_at"]:
+            after = df[df["ts"] >= sig["exit_at"] - 300]
+            exit_px = float(after["close"].iloc[0]) if len(after) else mark
+            exit_t = int(sig["exit_at"])
+        if exit_px is not None:
+            r = (sig["entry"] - exit_px) / (sig["sl"] - sig["entry"])
+            sig.update(status="win" if r > 0 else "loss", exit_price=float(exit_px), exit_time=exit_t, closed_at=int(time.time()), r=round(r, 3), mark=mark)
+            save_strategy_state()
+            await manager.broadcast({"type": "strategy_update", "data": sig})
+        elif sig.get("mark") != mark:
+            sig["mark"], sig["mark_time"] = mark, int(time.time())
+            await manager.broadcast({"type": "strategy_update", "data": sig})
+
+
+async def news_handle(a: dict, fresh: bool):
+    import news
+    for typ, tk in news.classify(a["title"]):
+        sym = _perp_of(tk)
+        if typ in ("MONITOR", "DELIST", "FUT_DELIST") and sym:
+            if a["ts"] > news_flags.get(sym, {}).get("ts", 0):
+                news_flags[sym] = {"type": typ, "ts": a["ts"], "title": a["title"]}
+        if not fresh:
+            continue
+        label = news.TRADE_TYPES.get(typ) or news.INFO_TYPES.get(typ, typ)
+        import translate
+        if "title_vi" not in a:
+            a["title_vi"] = await translate.to_vi(http, a["title"])
+        await manager.broadcast({"type": "news_alert", "data": {"id": f"{a['code']}-{tk}", "kind": typ, "label": label, "ticker": tk, "symbol": sym,
+                                                                  "title": a["title"], "title_vi": a["title_vi"], "ts": a["ts"], "stats": news.STATS.get(typ, "")}})
+        log.info("News %s %s (%s): %s", typ, tk, sym or "không có perp", a["title"][:90])
+        age_min = (time.time() - a["ts"]) / 60
+        if typ in news.TRADE_TYPES and sym and strategy_enabled.get("news") and age_min <= NEWS_MAX_AGE_MIN and not has_open_signal("news", sym):
+            try:
+                t = await exchange.fetch_ticker(to_ccxt_symbol(sym))
+                px = float(t["last"])
+            except Exception:
+                continue
+            now = int(time.time())
+            sig = {"id": f"news-{sym}-{a['ts']}", "system": "news", "symbol": sym, "timeframe": "5m", "direction": "bearish",
+                   "zone_kind": label, "entry": px, "sl": px * (1 + NEWS_SL_PCT / 100), "tp": None, "rr": None, "hold_h": NEWS_HOLD_H,
+                   "entry_time": now, "exit_at": now + NEWS_HOLD_H * 3600, "detected_at": now, "status": "open",
+                   "closed_at": None, "exit_time": None, "exit_price": None, "title": a["title"], "title_vi": a.get("title_vi"), "news_ts": a["ts"]}
+            if sig["id"] not in strategy_seen:
+                strategy_seen.add(sig["id"])
+                strategy_signals["news"].appendleft(sig)
+                save_strategy_state()
+                await manager.broadcast({"type": "strategy_signal", "data": sig})
+
+
+feed_items: deque = deque(maxlen=300)
+feed_seen: set[str] = set()
+
+
+def _perp_bases() -> dict[str, str]:
+    """base asset -> symbol perp (vd PEPE -> 1000PEPEUSDT)."""
+    out = {}
+    for m in (exchange.markets or {}).values():
+        if m.get("swap") and m.get("quote") == "USDT" and m.get("active") and m.get("info", {}).get("contractType") == "PERPETUAL":
+            b = m.get("base", "")
+            b2 = re.sub(r"^1000+", "", b)
+            out.setdefault(b2, m["id"])
+    return out
+
+
+async def feed_loop():
+    import feed
+    for it in feed.load_recent():
+        feed_seen.add(it["id"])
+        feed_items.appendleft(it)
+    first = not feed_seen
+    while True:
+        try:
+            bases = _perp_bases()
+            raw = await feed.fetch_all(http)
+            new = [it for it in sorted(raw, key=lambda x: x["ts"]) if it["id"] not in feed_seen]
+            if new:
+                need = set()
+                for it in new:
+                    it["coins"] = [bases[b] for b in feed.tag(it["text"], set(bases))]
+                    need.update(it["coins"])
+                prices = {}
+                if need:
+                    try:
+                        tk = await exchange.fetch_tickers()
+                        for msym, t in tk.items():
+                            mid = exchange.markets.get(msym, {}).get("id")
+                            if mid in need and t.get("last"):
+                                prices[mid] = float(t["last"])
+                    except Exception:
+                        pass
+                import translate
+                await translate.batch(http, list(reversed(new)), limit=60)
+                for it in new:
+                    it["prices"] = {c: prices.get(c) for c in it["coins"]}
+                    it["seen_at"] = int(time.time())
+                    feed_seen.add(it["id"])
+                    feed_items.appendleft(it)
+                feed.append(new)
+                if not first:
+                    open_syms = {x["symbol"] for v in strategy_signals.values() for x in v if x["status"] in ("open", "pending")}
+                    for it in new:
+                        await manager.broadcast({"type": "feed_item", "data": {**it, "hot": bool(set(it["coins"]) & open_syms)}})
+                log.info("Feed: +%d bài (%d gắn coin)", len(new), sum(1 for it in new if it["coins"]))
+            import translate
+            await translate.batch(http, list(feed_items), limit=20)
+            first = False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Feed loop lỗi")
+        await asyncio.sleep(90)
+
+
+async def news_loop():
+    import news
+    first = True
+    while True:
+        try:
+            arts = await news.fetch_latest(http, 50 if first else 20)
+            for a in sorted(arts, key=lambda x: x["ts"]):
+                if a["code"] in news_seen:
+                    continue
+                news_seen.add(a["code"])
+                await news_handle(a, fresh=not first)
+            first = False
+            await news_update_open()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("News loop lỗi")
+        await asyncio.sleep(60)
+
+
 async def screener_loop():
     while True:
         t0 = time.time()
@@ -542,335 +830,70 @@ async def kline_relay_loop():
         await asyncio.sleep(KLINE_POLL_INTERVAL)
 
 
-# ─────────────────────────── Scalp/Swing strategy engine ───────────────────────────
-def strat_candle_patterns(df: pd.DataFrame) -> pd.DataFrame:
-    """Nến trigger: Bullish/Bearish Engulfing, Pin bar, CISD (Change in State of Delivery)."""
-    o, h, l, c = df["open"], df["high"], df["low"], df["close"]
-    body = (c - o).abs()
-    rng = (h - l).replace(0, np.nan)
-    upper_wick = h - pd.concat([o, c], axis=1).max(axis=1)
-    lower_wick = pd.concat([o, c], axis=1).min(axis=1) - l
-
-    bull_engulf = (c > o) & (c.shift(1) < o.shift(1)) & (o <= c.shift(1)) & (c >= o.shift(1))
-    bear_engulf = (c < o) & (c.shift(1) > o.shift(1)) & (o >= c.shift(1)) & (c <= o.shift(1))
-    bull_pin = (lower_wick >= 2 * body) & (upper_wick <= body * 0.6) & ((c - l) / rng >= 0.6)
-    bear_pin = (upper_wick >= 2 * body) & (lower_wick <= body * 0.6) & ((h - c) / rng >= 0.6)
-
-    is_down, is_up = c < o, c > o
-    bull_cisd = pd.Series(False, index=df.index)
-    bear_cisd = pd.Series(False, index=df.index)
-    run_open_down, run_len_down, run_open_up, run_len_up = None, 0, None, 0
-    for i in range(1, len(df)):
-        if is_down.iloc[i - 1]:
-            if run_len_down == 0:
-                run_open_down = o.iloc[i - 1]
-            run_len_down += 1
-        else:
-            run_len_down = 0
-        if is_up.iloc[i - 1]:
-            if run_len_up == 0:
-                run_open_up = o.iloc[i - 1]
-            run_len_up += 1
-        else:
-            run_len_up = 0
-        if run_len_down >= 2 and is_up.iloc[i] and c.iloc[i] > run_open_down:
-            bull_cisd.iloc[i] = True
-        if run_len_up >= 2 and is_down.iloc[i] and c.iloc[i] < run_open_up:
-            bear_cisd.iloc[i] = True
-
-    return pd.DataFrame({"bull_trigger": bull_engulf | bull_pin | bull_cisd,
-                          "bear_trigger": bear_engulf | bear_pin | bear_cisd})
-
-
-def strat_bias_series(ohlc: pd.DataFrame, swing_length: int) -> pd.Series:
-    """Bias = hướng của cú phá cấu trúc (BoS/CHoCH) GẦN NHẤT ĐÃ XẢY RA. smc.bos_choch ghi tín hiệu tại
-    index của swing gốc chứ không phải nến phá vỡ — ffill trực tiếp sẽ 'nhìn trước' các cú phá về sau
-    (đã làm backtest cũ phóng đại), nên ở đây đặt bias tại BrokenIndex. Bỏ nến cuối (đang chạy)."""
-    ohlc = ohlc.iloc[:-1].reset_index(drop=True)
-    swings = smc.swing_highs_lows(ohlc, swing_length=swing_length)
-    struct = smc.bos_choch(ohlc, swings, close_break=True)
-    arr = np.full(len(ohlc), np.nan)
-    events = []
-    for i, row in struct.iterrows():
-        d = row["BOS"] if pd.notna(row["BOS"]) else row["CHOCH"]
-        if pd.notna(d) and d != 0 and pd.notna(row["BrokenIndex"]):
-            events.append((int(row["BrokenIndex"]), i, d))
-    for j, _, d in sorted(events):
-        if j < len(arr):
-            arr[j] = d
-    return pd.Series(arr).ffill()
-
-
-def strat_build_zones(ohlc: pd.DataFrame, swing_length: int) -> pd.DataFrame:
-    """FVG + Order Block, gộp thành 1 bảng zone chung (kind/dir/top/bottom/formed_idx/mitigated_idx)."""
-    swings = smc.swing_highs_lows(ohlc, swing_length=swing_length)
-    fvg = smc.fvg(ohlc, join_consecutive=False)
-    ob = smc.ob(ohlc, swings, close_mitigation=False)
-    rows = []
-    for kind, data, col in (("FVG", fvg, "FVG"), ("OB", ob, "OB")):
-        for idx, row in data.dropna(subset=[col]).iterrows():
-            rows.append({"kind": kind, "dir": int(row[col]), "top": float(row["Top"]), "bottom": float(row["Bottom"]),
-                         "formed_idx": int(idx), "mitigated_idx": int(row["MitigatedIndex"]) if row["MitigatedIndex"] else 0})
-    return pd.DataFrame(rows, columns=["kind", "dir", "top", "bottom", "formed_idx", "mitigated_idx"])
-
-
-def strat_active_zones(zones: pd.DataFrame, as_of_idx: int, direction: int) -> pd.DataFrame:
-    if zones.empty:
-        return zones
-    return zones[(zones["dir"] == direction) & (zones["formed_idx"] <= as_of_idx)
-                 & ((zones["mitigated_idx"] == 0) | (zones["mitigated_idx"] > as_of_idx))]
-
-
-def strat_overlaps(top1, bottom1, top2, bottom2) -> bool:
-    return not (top1 < bottom2 or top2 < bottom1)
-
-
-def strat_session_vwap(df: pd.DataFrame) -> pd.Series:
-    tp = (df["high"] + df["low"] + df["close"]) / 3
-    day = df["ts"] // 86400
-    pv = (tp * df["volume"]).groupby(day).cumsum()
-    v = df["volume"].groupby(day).cumsum()
-    return pv / v.replace(0, np.nan)
-
-
-def strat_rolling_vwap(df: pd.DataFrame, window: int) -> pd.Series:
-    tp = (df["high"] + df["low"] + df["close"]) / 3
-    pv = (tp * df["volume"]).rolling(window).sum()
-    v = df["volume"].rolling(window).sum()
-    return pv / v.replace(0, np.nan)
-
-
-def check_scalp_signal(symbol: str, h4: pd.DataFrame, m15: pd.DataFrame, m5: pd.DataFrame) -> dict | None:
-    """H4 bias -> M15 OB/FVG confluence với H4 -> trigger nến M5, lọc thêm VWAP phiên (chiết khấu/premium)."""
-    m5c = m5.iloc[:-1].reset_index(drop=True)  # bỏ nến đang chạy
-    if len(m5c) < 30 or len(h4) < 30 or len(m15) < 30:
-        return None
-    h4_ohlc, m15_ohlc = h4[["open", "high", "low", "close", "volume"]], m15[["open", "high", "low", "close", "volume"]]
-
-    bias = strat_bias_series(h4_ohlc, 8)
-    if pd.isna(bias.iloc[-1]) or bias.iloc[-1] == 0:
-        return None
-    direction = int(bias.iloc[-1])
-
-    i = len(m5c) - 1
-    lo, hi = float(m5c["low"].iloc[i]), float(m5c["high"].iloc[i])
-    h4_active = strat_active_zones(strat_build_zones(h4_ohlc, 8), len(h4_ohlc) - 1, direction)
-    if h4_active.empty:
-        return None
-    h4_touch = h4_active[h4_active.apply(lambda z: strat_overlaps(hi, lo, z["top"], z["bottom"]), axis=1)]
-    if h4_touch.empty:
-        return None
-
-    m15_active = strat_active_zones(strat_build_zones(m15_ohlc, 10), len(m15_ohlc) - 1, direction)
-    if m15_active.empty:
-        return None
-    confluent = m15_active[m15_active.apply(
-        lambda z: any(strat_overlaps(z["top"], z["bottom"], hz["top"], hz["bottom"]) for _, hz in h4_touch.iterrows()),
-        axis=1)]
-    confluent = confluent[confluent.apply(lambda z: strat_overlaps(hi, lo, z["top"], z["bottom"]), axis=1)]
-    if confluent.empty:
-        return None
-
-    patt = strat_candle_patterns(m5c)
-    if not (patt["bull_trigger"].iloc[i] if direction > 0 else patt["bear_trigger"].iloc[i]):
-        return None
-
-    vwap = strat_session_vwap(m5c)
-    entry = float(m5c["close"].iloc[i])
-    if pd.isna(vwap.iloc[i]):
-        return None
-    if direction > 0 and entry >= vwap.iloc[i]:
-        return None
-    if direction < 0 and entry <= vwap.iloc[i]:
-        return None
-
-    zone = confluent.iloc[0]
-    sl = zone["bottom"] * (1 - STRAT_SL_BUFFER) if direction > 0 else zone["top"] * (1 + STRAT_SL_BUFFER)
-    risk = abs(entry - sl)
-    if risk <= 0 or risk / entry > STRAT_MAX_RISK_PCT:
-        return None
-    tp = entry + SCALP_RR * risk if direction > 0 else entry - SCALP_RR * risk
-    entry_time = int(m5c["ts"].iloc[i]) + TF_SECONDS["5m"]  # giờ ĐÓNG nến trigger = lúc entry thực sự xác nhận
-    status, exit_time, exit_price = resolve_outcome(m5, entry_time, sl, tp, direction > 0)
-    return {
-        "id": f"scalp-{symbol}-{entry_time}-{direction}", "system": "scalp", "symbol": symbol, "timeframe": "5m",
-        "direction": "bullish" if direction > 0 else "bearish", "zone_kind": zone["kind"],
-        "entry": entry, "sl": sl, "tp": tp, "rr": SCALP_RR, "entry_time": entry_time,
-        "detected_at": int(time.time()), "status": status,
-        "closed_at": int(time.time()) if status != "open" else None,
-        "exit_time": exit_time, "exit_price": exit_price,
-    }
-
-
-def check_swing_signal(symbol: str, d1: pd.DataFrame, h4: pd.DataFrame) -> dict | None:
-    """Daily bias -> H4 OB/FVG confluence -> trigger nến H4, lọc VWAP rolling 20 ngày."""
-    if len(d1) < 30 or len(h4) < 150:
-        return None
-    d1_ohlc, h4_ohlc = d1[["open", "high", "low", "close", "volume"]], h4[["open", "high", "low", "close", "volume"]]
-
-    bias = strat_bias_series(d1_ohlc, 8)
-    if pd.isna(bias.iloc[-1]) or bias.iloc[-1] == 0:
-        return None
-    direction = int(bias.iloc[-1])
-
-    i = len(h4) - 2  # bỏ nến H4 đang chạy
-    if i < 30:
-        return None
-    lo, hi = float(h4["low"].iloc[i]), float(h4["high"].iloc[i])
-    active = strat_active_zones(strat_build_zones(h4_ohlc, 10), i, direction)
-    if active.empty:
-        return None
-    touch = active[active.apply(lambda z: strat_overlaps(hi, lo, z["top"], z["bottom"]), axis=1)]
-    if touch.empty:
-        return None
-
-    patt = strat_candle_patterns(h4.iloc[:i + 1])
-    if not (patt["bull_trigger"].iloc[i] if direction > 0 else patt["bear_trigger"].iloc[i]):
-        return None
-
-    vwap = strat_rolling_vwap(h4, window=20 * 6)
-    entry = float(h4["close"].iloc[i])
-    if pd.isna(vwap.iloc[i]):
-        return None
-    if direction > 0 and entry >= vwap.iloc[i]:
-        return None
-    if direction < 0 and entry <= vwap.iloc[i]:
-        return None
-
-    zone = touch.iloc[0]
-    sl = zone["bottom"] * (1 - STRAT_SL_BUFFER) if direction > 0 else zone["top"] * (1 + STRAT_SL_BUFFER)
-    risk = abs(entry - sl)
-    if risk <= 0 or risk / entry > STRAT_MAX_RISK_PCT * 2:
-        return None
-    tp = entry + SWING_RR * risk if direction > 0 else entry - SWING_RR * risk
-    entry_time = int(h4["ts"].iloc[i]) + TF_SECONDS["4h"]  # giờ ĐÓNG nến trigger = lúc entry thực sự xác nhận
-    status, exit_time, exit_price = resolve_outcome(h4, entry_time, sl, tp, direction > 0)
-    return {
-        "id": f"swing-{symbol}-{entry_time}-{direction}", "system": "swing", "symbol": symbol, "timeframe": "4h",
-        "direction": "bullish" if direction > 0 else "bearish", "zone_kind": zone["kind"],
-        "entry": entry, "sl": sl, "tp": tp, "rr": SWING_RR, "entry_time": entry_time,
-        "detected_at": int(time.time()), "status": status,
-        "closed_at": int(time.time()) if status != "open" else None,
-        "exit_time": exit_time, "exit_price": exit_price,
-    }
-
-
-def strat_struct_events(df: pd.DataFrame, swing_length: int) -> list[dict]:
-    """BoS/CHoCH thuần price-action (level + broken_idx), dùng cho hệ thống M1 Entry —
-    không phụ thuộc SWING_LENGTH toàn cục vì cần swing_length riêng cho từng khung."""
-    ohlc = df[["open", "high", "low", "close", "volume"]].reset_index(drop=True)
-    swings = smc.swing_highs_lows(ohlc, swing_length=swing_length)
-    struct = smc.bos_choch(ohlc, swings, close_break=True)
-    events = []
-    for i, row in struct.iterrows():
-        if pd.notna(row["CHOCH"]) and row["CHOCH"] != 0:
-            direction = int(row["CHOCH"])
-        elif pd.notna(row["BOS"]) and row["BOS"] != 0:
-            direction = int(row["BOS"])
-        else:
-            continue
-        if pd.isna(row["BrokenIndex"]):
-            continue
-        broken = int(row["BrokenIndex"])
-        if broken >= len(df):
-            continue
-        events.append({"dir": direction, "level": float(row["Level"]), "broken_idx": broken})
-    events.sort(key=lambda e: e["broken_idx"])
-    return events
-
-
-def check_m1_signal(symbol: str, h1: pd.DataFrame, m5: pd.DataFrame, m1: pd.DataFrame) -> dict | None:
-    """1H bias -> 5M break-of-structure cùng hướng -> chờ giá hồi đúng mức đó trong
-    M1_RETEST_WINDOW_MIN phút -> entry bằng nến xác nhận (engulfing/wick dài) trên M1.
-    SL = ngay ngoài wick nến đó — không dùng SMC zone/VWAP, thuần price action."""
-    h1_ohlc = h1[["open", "high", "low", "close", "volume"]]
-    bias = strat_bias_series(h1_ohlc, M1_SWING_1H)
-    if pd.isna(bias.iloc[-1]) or bias.iloc[-1] == 0:
-        return None
-    direction = int(bias.iloc[-1])
-
-    m5c = m5.iloc[:-1].reset_index(drop=True)
-    if len(m5c) < 30:
-        return None
-    events = [e for e in strat_struct_events(m5c, M1_SWING_5M) if e["dir"] == direction]
-    if not events:
-        return None
-    ev = events[-1]
-    broken_time = int(m5c["ts"].iloc[ev["broken_idx"]])
-    level = ev["level"]
-
-    m1c = m1.iloc[:-1].reset_index(drop=True)
-    if len(m1c) < 30:
-        return None
-    i = len(m1c) - 1
-    now_time = int(m1c["ts"].iloc[i])
-    if now_time <= broken_time or now_time > broken_time + M1_RETEST_WINDOW_MIN * 60:
-        return None  # ngoài cửa sổ retest hợp lệ (chưa tới hoặc đã hết hạn)
-
-    hi, lo = float(m1c["high"].iloc[i]), float(m1c["low"].iloc[i])
-    band_lo, band_hi = level * (1 - M1_RETEST_TOLERANCE), level * (1 + M1_RETEST_TOLERANCE)
-    if hi < band_lo or lo > band_hi:
-        return None
-
-    patt = strat_candle_patterns(m1c)
-    if not (patt["bull_trigger"].iloc[i] if direction > 0 else patt["bear_trigger"].iloc[i]):
-        return None
-
-    entry = float(m1c["close"].iloc[i])
-    sl = float(m1c["low"].iloc[i]) * (1 - M1_SL_BUFFER) if direction > 0 else float(m1c["high"].iloc[i]) * (1 + M1_SL_BUFFER)
-    risk = abs(entry - sl)
-    if risk <= 0 or risk / entry > STRAT_MAX_RISK_PCT:
-        return None
-    tp = entry + M1_RR * risk if direction > 0 else entry - M1_RR * risk
-    entry_time = now_time + TF_SECONDS["1m"]  # giờ ĐÓNG nến M1 trigger = lúc entry thực sự xác nhận
-    status, exit_time, exit_price = resolve_outcome(m1, entry_time, sl, tp, direction > 0)
-    return {
-        "id": f"m1-{symbol}-{entry_time}-{direction}", "system": "m1", "symbol": symbol, "timeframe": "1m",
-        "direction": "bullish" if direction > 0 else "bearish", "zone_kind": "BOS",
-        "entry": entry, "sl": sl, "tp": tp, "rr": M1_RR, "entry_time": entry_time,
-        "detected_at": int(time.time()), "status": status,
-        "closed_at": int(time.time()) if status != "open" else None,
-        "exit_time": exit_time, "exit_price": exit_price,
-    }
-
-
-def check_nr7_signal(symbol: str, h1: pd.DataFrame) -> dict | None:
-    """Nến k có biên độ nhỏ nhất 7 nến (NR7); nến kế tiếp i đóng cửa phá đỉnh/đáy nến k -> vào lệnh tại giá đóng
-    nến i, SL ở đầu kia của nến NR7. Chỉ dùng nến đã đóng. Đúng định nghĩa đã backtest."""
-    d = h1.iloc[:-1].reset_index(drop=True)  # bỏ nến H1 đang chạy
-    if len(d) < 70:
-        return None
-    i, k = len(d) - 1, len(d) - 2
-    rng = (d["high"] - d["low"]).to_numpy(float)
-    if rng[k] > rng[k - 6:k + 1].min():
-        return None
-    hk, lk, c = float(d["high"].iloc[k]), float(d["low"].iloc[k]), float(d["close"].iloc[i])
-    if c > hk:
-        direction, sl = 1, lk * 0.999
-    elif c < lk:
-        direction, sl = -1, hk * 1.001
-    else:
-        return None
-    risk = abs(c - sl)
-    if risk / c < NR7_MIN_RISK or risk / c > NR7_MAX_RISK or (direction > 0 and sl >= c) or (direction < 0 and sl <= c):
-        return None
-    tp = c + NR7_RR * risk if direction > 0 else c - NR7_RR * risk
-    entry_time = int(d["ts"].iloc[i]) + TF_SECONDS["1h"]  # giờ đóng nến phá vỡ = lúc entry thực sự xác nhận
-    status, exit_time, exit_price = resolve_outcome(h1, entry_time, sl, tp, direction > 0)
-    return {
-        "id": f"nr7-{symbol}-{entry_time}-{direction}", "system": "nr7", "symbol": symbol, "timeframe": "1h",
-        "direction": "bullish" if direction > 0 else "bearish", "zone_kind": "NR7",
-        "entry": c, "sl": sl, "tp": tp, "rr": NR7_RR, "entry_time": entry_time,
-        "detected_at": int(time.time()), "status": status,
-        "closed_at": int(time.time()) if status != "open" else None,
-        "exit_time": exit_time, "exit_price": exit_price,
-    }
-
-
+# ─────────────────────────── Strategy engine (Pullback H4, NR7 H4, Breakout H4) ───────────────────────────
 def has_open_signal(system: str, symbol: str) -> bool:
     """Mỗi symbol chỉ giữ 1 lệnh mở/hệ thống tại 1 thời điểm — tránh bắn tín hiệu trùng khi
     điều kiện entry vẫn còn đúng ở nhiều nến liên tiếp (VD nhiều nến xác nhận sát nhau)."""
-    return any(s["symbol"] == symbol and s["status"] == "open" for s in strategy_signals[system])
+    return any(s["symbol"] == symbol and s["status"] in ("open", "pending") for s in strategy_signals[system])
+
+
+def wilder_atr(h: np.ndarray, l: np.ndarray, c: np.ndarray, n: int = 14) -> np.ndarray:
+    pc = np.r_[c[0], c[:-1]]
+    tr = np.maximum(h - l, np.maximum(abs(h - pc), abs(l - pc)))
+    tr[0] = h[0] - l[0]
+    return pd.Series(tr).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy()
+
+
+def resolve_limit(df: pd.DataFrame, placed: int, limit: float, sl: float, tp: float, bull: bool, expires: int, tstop: int = 0, tmfe: float = 0.0):
+    """Lệnh limit đặt lúc `placed` (giờ đóng nến tín hiệu), hiệu lực tới `expires`. Khớp khi giá chạm limit; nếu chính nến khớp chạm SL
+    -> thua (bảo thủ, TP chưa xét ở nến khớp). Sau đó SL kiểm tra trước TP như resolve_outcome.
+    tstop > 0: sau tstop nến H4 kể từ nến khớp mà giá chưa đi được tmfe R -> đóng ở giá đóng nến thứ tstop (chỉ xét nến đã đóng).
+    Trả về (status, fill_time, exit_time, exit_price) với status in pending/expired/open/win/loss."""
+    fill = None
+    risk = abs(limit - sl)
+    mfe, nb = 0.0, 0
+    now = time.time()
+    for row in df[df["ts"] >= placed].itertuples():
+        if fill is None:
+            if row.ts >= expires:
+                return "expired", None, None, None
+            if (row.low <= limit) if bull else (row.high >= limit):
+                fill = int(row.ts)
+                if (row.low <= sl) if bull else (row.high >= sl):
+                    return "loss", fill, fill, sl
+            continue
+        hit_sl = row.low <= sl if bull else row.high >= sl
+        hit_tp = row.high >= tp if bull else row.low <= tp
+        if hit_sl or hit_tp:
+            return ("loss" if hit_sl else "win"), fill, int(row.ts), (sl if hit_sl else tp)
+        nb += 1
+        mfe = max(mfe, ((row.high - limit) if bull else (limit - row.low)) / risk)
+        if tstop and nb >= tstop and mfe < tmfe and row.ts + TF_SECONDS["4h"] <= now:
+            px = float(row.close)
+            return ("win" if (px - limit) * (1 if bull else -1) > 0 else "loss"), fill, int(row.ts), px
+    if fill is None:
+        return ("expired" if time.time() >= expires else "pending"), None, None, None
+    return "open", fill, None, None
+
+
+def limit_signal(system: str, symbol: str, h4: pd.DataFrame, placed: int, bull: bool, limit: float, sl: float, rr: float, kind: str,
+                 tstop: int = 0, tmfe: float = 0.0) -> dict | None:
+    risk = abs(limit - sl)
+    if risk <= 0 or (sl >= limit if bull else sl <= limit) or not (0.003 <= risk / limit <= 0.12):
+        return None
+    tp = limit + rr * risk if bull else limit - rr * risk
+    expires = placed + LIMIT_BARS * TF_SECONDS["4h"]
+    status, fill_time, exit_time, exit_price = resolve_limit(h4, placed, limit, sl, tp, bull, expires, tstop, tmfe)
+    r_real = round((exit_price - limit) * (1 if bull else -1) / risk, 3) if status in ("win", "loss") and exit_price is not None else None
+    return {
+        "tstop": tstop, "tmfe": tmfe, "r": r_real,
+        "id": f"{system}-{symbol}-{placed}-{'L' if bull else 'S'}", "system": system, "symbol": symbol, "timeframe": "4h",
+        "direction": "bullish" if bull else "bearish", "zone_kind": kind, "order": "limit",
+        "entry": float(limit), "sl": float(sl), "tp": float(tp), "rr": rr, "entry_time": placed, "expires_at": expires, "fill_time": fill_time,
+        "detected_at": int(time.time()), "status": status,
+        "closed_at": int(time.time()) if status not in ("open", "pending") else None,
+        "exit_time": exit_time, "exit_price": exit_price,
+    }
 
 
 def resolve_outcome(df: pd.DataFrame, entry_time: int, sl: float, tp: float, bull: bool):
@@ -887,12 +910,357 @@ def resolve_outcome(df: pd.DataFrame, entry_time: int, sl: float, tp: float, bul
     return "open", None, None
 
 
+def resolve_trail(df: pd.DataFrame, entry_time: int, entry: float, sl0: float, bull: bool, trail: float):
+    """Trailing stop kiểu chandelier theo giá đóng cửa: stop = giá đóng tốt nhất -/+ trail x rủi ro ban đầu, chỉ dời theo
+    hướng có lợi. Stop được đánh giá trước khi cập nhật bằng nến hiện tại (giống backtest). Trả về
+    (status, exit_time, exit_price, stop_hiện_tại, R). Tính lại từ lúc entry mỗi lần gọi nên không cần lưu trạng thái trung gian."""
+    risk = abs(entry - sl0)
+    stop, best = sl0, entry
+    for row in df[df["ts"] >= entry_time].itertuples():
+        if (row.low <= stop) if bull else (row.high >= stop):
+            r = ((stop - entry) if bull else (entry - stop)) / risk
+            return ("win" if r > 0 else "loss"), int(row.ts), stop, stop, r
+        best = max(best, row.close) if bull else min(best, row.close)
+        new_stop = best - trail * risk if bull else best + trail * risk
+        stop = max(stop, new_stop) if bull else min(stop, new_stop)
+    return "open", None, None, stop, None
+
+
+def check_pb_signal(symbol: str, h4: pd.DataFrame) -> dict | None:
+    """Xu hướng EMA50 vs EMA200 (H4). Mua: giá đóng vừa cắt lên EMA20 sau khi nến trước đóng dưới EMA20. Bán ngược lại.
+    SL = cực trị PB_SL_BARS nến gần nhất, không có TP cố định — thoát bằng trailing stop PB_TRAIL R."""
+    d = h4.iloc[:-1].reset_index(drop=True)
+    if len(d) < 300:
+        return None
+    c = d["close"].astype(float)
+    e20, e50, e200 = (c.ewm(span=n, adjust=False).mean() for n in (20, 50, 200))
+    i = len(d) - 1
+    ci, pc, pe20 = float(c.iloc[i]), float(c.iloc[i - 1]), float(e20.iloc[i - 1])
+    if e50.iloc[i] > e200.iloc[i] and pc < pe20 and ci > e20.iloc[i]:
+        bull, sl = True, float(d["low"].iloc[i - PB_SL_BARS:i + 1].min())
+    elif e50.iloc[i] < e200.iloc[i] and pc > pe20 and ci < e20.iloc[i]:
+        bull, sl = False, float(d["high"].iloc[i - PB_SL_BARS:i + 1].max())
+    else:
+        return None
+    risk = abs(ci - sl)
+    if PB_ENTRY_ATR <= 0 and ((bull and sl >= ci) or (not bull and sl <= ci) or risk / ci < PB_MIN_RISK or risk / ci > PB_MAX_RISK):
+        return None
+
+    # ---- filter đã kiểm chứng: xu hướng non, chưa kéo xa EMA200, nến xác nhận có thân
+    sign = np.sign((e50 - e200).to_numpy())
+    age = 0
+    for k in range(i - 1, -1, -1):
+        if sign[k] != sign[i]:
+            break
+        age += 1
+    if age > PB_MAX_AGE:
+        return None
+    hi, lo, op = d["high"].astype(float).to_numpy(), d["low"].astype(float).to_numpy(), d["open"].astype(float).to_numpy()
+    cl = c.to_numpy()
+    prev = np.r_[cl[0], cl[:-1]]
+    tr = np.maximum(hi - lo, np.maximum(abs(hi - prev), abs(lo - prev)))
+    atr14 = float(tr[i - 13:i + 1].mean())
+    if atr14 <= 0 or (1 if bull else -1) * (ci - float(e200.iloc[i])) / atr14 > PB_MAX_DIST200:
+        return None
+    rng = hi[i] - lo[i]
+    if rng <= 0 or abs(ci - op[i]) / rng < PB_MIN_BODY:
+        return None
+
+    entry_time = int(d["ts"].iloc[i]) + TF_SECONDS["4h"]
+    if PB_ENTRY_ATR > 0:
+        if bb_width_pctl(cl, i) < PB_MIN_BBW_PCTL:
+            return None
+        a = float(wilder_atr(hi, lo, cl)[i])
+        sign = 1 if bull else -1
+        limit = ci - sign * PB_ENTRY_ATR * a
+        return limit_signal("pb4h", symbol, h4, entry_time, bull, limit, limit - sign * PB_SL_ATR * a, PB_RR, "Pullback EMA20 · limit")
+    sid = f"pb4h-{symbol}-{entry_time}-{'L' if bull else 'S'}"
+    if PB_EXIT == "tp":
+        tp = ci + PB_RR * risk if bull else ci - PB_RR * risk
+        status, exit_time, exit_price = resolve_outcome(h4, entry_time, sl, tp, bull)
+        return {
+            "id": sid, "system": "pb4h", "symbol": symbol, "timeframe": "4h",
+            "direction": "bullish" if bull else "bearish", "zone_kind": "Pullback EMA20",
+            "entry": ci, "sl": sl, "tp": tp, "rr": PB_RR, "entry_time": entry_time,
+            "detected_at": int(time.time()), "status": status,
+            "closed_at": int(time.time()) if status != "open" else None,
+            "exit_time": exit_time, "exit_price": exit_price,
+        }
+    status, exit_time, exit_price, stop, r = resolve_trail(h4, entry_time, ci, sl, bull, PB_TRAIL)
+    return {
+        "id": f"pb4h-{symbol}-{entry_time}-{'L' if bull else 'S'}", "system": "pb4h", "symbol": symbol, "timeframe": "4h",
+        "direction": "bullish" if bull else "bearish", "zone_kind": "Pullback EMA20",
+        "entry": ci, "sl": stop, "sl0": sl, "tp": None, "rr": None, "trail": PB_TRAIL, "r": r,
+        "entry_time": entry_time, "detected_at": int(time.time()), "status": status,
+        "closed_at": int(time.time()) if status != "open" else None,
+        "exit_time": exit_time, "exit_price": exit_price,
+    }
+
+
+def check_nr74_signal(symbol: str, h4: pd.DataFrame) -> dict | None:
+    """NR7 trên H4 (nến k nhỏ nhất 7 nến, nến kế đóng cửa phá vỡ) CHỈ theo hướng xu hướng H4: mua khi EMA50>EMA200 và giá đóng trên EMA20,
+    bán ngược lại. Entry giá đóng nến phá vỡ, SL đầu kia nến NR7 (+-0.1%), TP NR74_RR x rủi ro."""
+    d = h4.iloc[:-1].reset_index(drop=True)
+    if len(d) < 300:
+        return None
+    hi, lo, cl = (d[k].astype(float).to_numpy() for k in ("high", "low", "close"))
+    i, k = len(d) - 1, len(d) - 2
+    rng = hi - lo
+    if rng[k] > rng[k - 6:k + 1].min():
+        return None
+    if cl[i] > hi[k]:
+        bull, sl = True, lo[k] * 0.999
+    elif cl[i] < lo[k]:
+        bull, sl = False, hi[k] * 1.001
+    else:
+        return None
+    c = pd.Series(cl)
+    e20, e50, e200 = (float(c.ewm(span=n, adjust=False).mean().iloc[i]) for n in (20, 50, 200))
+    if bull and not (e50 > e200 and cl[i] > e20):
+        return None
+    if not bull and not (e50 < e200 and cl[i] < e20):
+        return None
+    ci = float(cl[i])
+    risk = abs(ci - sl)
+    if (bull and sl >= ci) or (not bull and sl <= ci) or risk / ci < NR7_MIN_RISK or risk / ci > NR7_MAX_RISK:
+        return None
+    tp = ci + NR74_RR * risk if bull else ci - NR74_RR * risk
+    entry_time = int(d["ts"].iloc[i]) + TF_SECONDS["4h"]
+    status, exit_time, exit_price = resolve_outcome(h4, entry_time, float(sl), float(tp), bull)
+    return {
+        "id": f"nr74h-{symbol}-{entry_time}-{'L' if bull else 'S'}", "system": "nr74h", "symbol": symbol, "timeframe": "4h",
+        "direction": "bullish" if bull else "bearish", "zone_kind": "NR7 + xu hướng H4",
+        "entry": ci, "sl": float(sl), "tp": float(tp), "rr": NR74_RR, "entry_time": entry_time,
+        "detected_at": int(time.time()), "status": status,
+        "closed_at": int(time.time()) if status != "open" else None,
+        "exit_time": exit_time, "exit_price": exit_price,
+    }
+
+
+def check_bo_signal(symbol: str, h4: pd.DataFrame, rr: float = BO_RR, system: str = "bo4h") -> dict | None:
+    """Nến H4 vừa đóng phá vỡ biên BO_BOX nến trước >= 0.2 ATR (thân >= BO_MIN_BODY biên độ), vào NGAY tại giá đóng, SL đầu kia nến phá vỡ -/+ 0.25 ATR,
+    TP BO_RR x rủi ro. Lọc: volume, phá xa biên, giá cùng phía EMA200, biến động không nén, BTC (H4) cùng hướng so với EMA200."""
+    d = h4.iloc[:-1].reset_index(drop=True)
+    if len(d) < 300:
+        return None
+    o, h, l, c, v = (d[k].astype(float).to_numpy() for k in ("open", "high", "low", "close", "volume"))
+    b = len(d) - 1
+    pc = np.r_[c[0], c[:-1]]
+    tr = np.maximum(h - l, np.maximum(abs(h - pc), abs(l - pc)))
+    atr = pd.Series(tr).rolling(14).mean().to_numpy()
+    a = float(atr[b])
+    if not a > 0 or h[b] <= l[b]:
+        return None
+    if abs(c[b] - o[b]) / (h[b] - l[b]) < BO_MIN_BODY:
+        return None
+    hi_prev, lo_prev = float(h[b - BO_BOX:b].max()), float(l[b - BO_BOX:b].min())
+    if c[b] > hi_prev + 0.2 * a and c[b] > o[b]:
+        bull, level, sl = True, hi_prev, float(l[b]) - 0.25 * a
+    elif c[b] < lo_prev - 0.2 * a and c[b] < o[b]:
+        bull, level, sl = False, lo_prev, float(h[b]) + 0.25 * a
+    else:
+        return None
+    ci = float(c[b])
+    risk = abs(ci - sl)
+    if system != "bo4h" and (risk / ci * 100 < 0.2 or risk / ci * 100 > 8.0):
+        return None
+    sign = 1 if bull else -1
+    volx = v[b] / v[b - 20:b].mean() if v[b - 20:b].mean() > 0 else 0
+    if volx < BO_MIN_VOLX or sign * (ci - level) / a < BO_MIN_BRK:
+        return None
+    e200 = float(pd.Series(c).ewm(span=200, adjust=False).mean().iloc[b])
+    if sign * (ci - e200) / a <= BO_MIN_DIST200:
+        return None
+    atr_pct = atr / c * 100
+    ratio = atr_pct[b] / np.nanmean(atr_pct[b - 249:b + 1])
+    if not ratio >= BO_MIN_ATR_RATIO:
+        return None
+    if btc_h4_regime.get(int(d["ts"].iloc[b])) != sign:
+        return None
+    if system == "bo4h" and BO_ENTRY_ATR > 0:
+        if BO_LONG_ONLY and not bull:
+            return None
+        if b < 180:
+            return None
+        if adx14(h, l, c, b) < BO_MIN_ADX:
+            return None
+        btc_r30 = btc_h4_r30.get(int(d["ts"].iloc[b]))
+        if btc_r30 is None or sign * ((c[b] / c[b - 180] - 1) - btc_r30) > BO_MAX_RS:
+            return None
+        wa = float(wilder_atr(h, l, c)[b])
+        limit = ci - sign * BO_ENTRY_ATR * wa
+        lo_ = max(b - BO_SL_BARS + 1, 0)
+        sl2 = (float(l[lo_:b + 1].min()) if bull else float(h[lo_:b + 1].max())) - sign * 0.1 * wa
+        return limit_signal("bo4h", symbol, h4, int(d["ts"].iloc[b]) + TF_SECONDS["4h"], bull, limit, sl2, rr, "Breakout + volume · limit",
+                            BO_TSTOP, BO_TMFE)
+    tp = ci + rr * risk if bull else ci - rr * risk
+    entry_time = int(d["ts"].iloc[b]) + TF_SECONDS["4h"]
+    status, exit_time, exit_price = resolve_outcome(h4, entry_time, sl, float(tp), bull)
+    return {
+        "id": f"{system}-{symbol}-{entry_time}-{'L' if bull else 'S'}", "system": system, "symbol": symbol, "timeframe": "4h",
+        "direction": "bullish" if bull else "bearish", "zone_kind": "Breakout + volume",
+        "entry": ci, "sl": sl, "tp": float(tp), "rr": rr, "entry_time": entry_time,
+        "detected_at": int(time.time()), "status": status,
+        "closed_at": int(time.time()) if status != "open" else None,
+        "exit_time": exit_time, "exit_price": exit_price,
+    }
+
+
+def resolve_time(df: pd.DataFrame, entry_time: int, sl: float, tp: float, bull: bool, hold_bars: int, tf_sec: int):
+    """Như resolve_outcome nhưng có thoát theo thời gian: sau hold_bars nến (đã đóng) kể từ khi vào -> đóng ở giá đóng nến đó."""
+    nb = 0
+    now = time.time()
+    for row in df[df["ts"] >= entry_time].itertuples():
+        hit_sl = row.low <= sl if bull else row.high >= sl
+        hit_tp = row.high >= tp if bull else row.low <= tp
+        if hit_sl or hit_tp:
+            return ("loss" if hit_sl else "win"), int(row.ts), (sl if hit_sl else tp)
+        nb += 1
+        if nb >= hold_bars and row.ts + tf_sec <= now:
+            return "time", int(row.ts), float(row.close)
+    return "open", None, None
+
+
+def check_vc_signal(symbol: str, h4: pd.DataFrame) -> dict | None:
+    """BÁN tiếp đà khi nến H4 vừa đóng lúc 16:00/20:00 UTC có volume > VC_VOLX x TB 20 nến trước và là nến GIẢM thứ 3 liên tiếp (bán tháo có volume)."""
+    d = h4.iloc[:-1].reset_index(drop=True)
+    if len(d) < 60:
+        return None
+    o, h, l, c, v = (d[k].astype(float).to_numpy() for k in ("open", "high", "low", "close", "volume"))
+    i = len(d) - 1
+    close_ts = int(d["ts"].iloc[i]) + TF_SECONDS["4h"]
+    if (close_ts // 3600) % 24 not in (16, 20):
+        return None
+    va = v[i - 20:i].mean()
+    if not (va > 0 and v[i] > VC_VOLX * va and c[i] < c[i - 1] < c[i - 2] < c[i - 3]):
+        return None
+    a = float(wilder_atr(h, l, c)[i])
+    ci = float(c[i])
+    if not (a > 0 and 0.003 <= VC_SL_ATR * a / ci <= 0.12):
+        return None
+    sl, tp = ci + VC_SL_ATR * a, ci - VC_TP_ATR * a
+    status, exit_time, exit_price = resolve_time(h4, close_ts, sl, tp, False, VC_HOLD, TF_SECONDS["4h"])
+    r = None
+    if status in ("win", "loss", "time"):
+        r = round((ci - exit_price) / (sl - ci), 3)
+        status = "win" if r > 0 else "loss"
+    return {
+        "id": f"vc4h-{symbol}-{close_ts}-S", "system": "vc4h", "symbol": symbol, "timeframe": "4h", "direction": "bearish",
+        "zone_kind": f"Bán tháo volume x{v[i] / va:.1f} · tối đa 3 ngày", "entry": ci, "sl": sl, "tp": tp, "rr": round(VC_TP_ATR / VC_SL_ATR, 2),
+        "entry_time": close_ts, "hold_bars": VC_HOLD, "detected_at": int(time.time()), "status": status, "r": r,
+        "closed_at": int(time.time()) if status not in ("open",) else None, "exit_time": exit_time, "exit_price": exit_price,
+    }
+
+
+def check_st_signal(symbol: str, h4: pd.DataFrame, rr: float = ST_RR, system: str = "st4h") -> dict | None:
+    """Supertrend (hl2 +- 3 x ATR14 Wilder) vừa đổi hướng ở nến H4 đóng cửa, thuận xu hướng EMA50/EMA200 (H4). SL = ST_SL_ATR x ATR14, TP = ST_RR x rủi ro."""
+    d = h4.iloc[:-1].reset_index(drop=True)
+    if len(d) < 300:
+        return None
+    h, l, c = (d[k].astype(float).to_numpy() for k in ("high", "low", "close"))
+    pc = np.r_[c[0], c[:-1]]
+    tr = np.maximum(h - l, np.maximum(abs(h - pc), abs(l - pc)))
+    tr[0] = h[0] - l[0]
+    atr = pd.Series(tr).ewm(alpha=1.0 / 14, adjust=False).mean().to_numpy()
+    hl2 = (h + l) / 2
+    ub, lb = hl2 + 3 * atr, hl2 - 3 * atr
+    up, lo, dr = ub.copy(), lb.copy(), np.ones(len(c), dtype=int)
+    for i in range(1, len(c)):
+        lo[i] = lb[i] if (lb[i] > lo[i - 1] or c[i - 1] < lo[i - 1]) else lo[i - 1]
+        up[i] = ub[i] if (ub[i] < up[i - 1] or c[i - 1] > up[i - 1]) else up[i - 1]
+        dr[i] = (-1 if c[i] > up[i] else 1) if dr[i - 1] == 1 else (1 if c[i] < lo[i] else -1)
+    i = len(c) - 1
+    e50 = pd.Series(c).ewm(span=50, adjust=False).mean().iloc[i]
+    e200 = pd.Series(c).ewm(span=200, adjust=False).mean().iloc[i]
+    if dr[i] == -1 and dr[i - 1] == 1 and e50 > e200:
+        bull = True
+    elif dr[i] == 1 and dr[i - 1] == -1 and e50 < e200:
+        bull = False
+    else:
+        return None
+    ci = float(c[i])
+    if system == "st4h" and ST4_SHORT_ONLY and bull:
+        return None
+    if system == "st4h" and ST4_ENTRY_ATR > 0:
+        k_ = stoch_k(h, l, c, i)
+        if (k_ if bull else 100 - k_) >= ST_MAX_STOCH:
+            return None
+        sign = 1 if bull else -1
+        limit = ci - sign * ST4_ENTRY_ATR * float(atr[i])
+        return limit_signal("st4h", symbol, h4, int(d["ts"].iloc[i]) + TF_SECONDS["4h"], bull, limit, limit - sign * ST4_SL_ATR * float(atr[i]), rr,
+                            "Supertrend flip · limit")
+    risk = ST_SL_ATR * float(atr[i])
+    if risk / ci < ST_MIN_RISK or risk / ci > ST_MAX_RISK:
+        return None
+    sl = ci - risk if bull else ci + risk
+    tp = ci + rr * risk if bull else ci - rr * risk
+    entry_time = int(d["ts"].iloc[i]) + TF_SECONDS["4h"]
+    status, exit_time, exit_price = resolve_outcome(h4, entry_time, sl, tp, bull)
+    return {
+        "id": f"{system}-{symbol}-{entry_time}-{'L' if bull else 'S'}", "system": system, "symbol": symbol, "timeframe": "4h",
+        "direction": "bullish" if bull else "bearish", "zone_kind": "Supertrend flip",
+        "entry": ci, "sl": sl, "tp": tp, "rr": rr, "entry_time": entry_time,
+        "detected_at": int(time.time()), "status": status,
+        "closed_at": int(time.time()) if status != "open" else None,
+        "exit_time": exit_time, "exit_price": exit_price,
+    }
+
+
+async def refresh_btc_regime():
+    """Cập nhật chế độ BTC H4 (đóng trên/dưới EMA200) cho filter của Breakout H4."""
+    try:
+        df = await fetch_ohlc("BTCUSDT", "4h", 700)
+    except Exception:
+        return
+    d = df.iloc[:-1]
+    c = d["close"].astype(float)
+    reg = np.where(c > c.ewm(span=200, adjust=False).mean(), 1, -1)
+    r30 = (c / c.shift(180) - 1).to_numpy()
+    for ts_, r, x in zip(d["ts"].to_numpy()[-60:], reg[-60:], r30[-60:]):
+        btc_h4_regime[int(ts_)] = int(r)
+        if not np.isnan(x):
+            btc_h4_r30[int(ts_)] = float(x)
+
+
 async def update_open_signals(system: str, symbol: str, df: pd.DataFrame):
     """Kiểm tra các tín hiệu đang mở của symbol này."""
     for sig in list(strategy_signals[system]):
-        if sig["symbol"] != symbol or sig["status"] != "open":
+        if sig["symbol"] != symbol or sig["status"] not in ("open", "pending"):
             continue
+        mark = float(df["close"].iloc[-1])
+        if sig.get("mark") != mark:
+            sig["mark"], sig["mark_time"] = mark, int(time.time())
+            await manager.broadcast({"type": "strategy_update", "data": sig})
         bull = sig["direction"] == "bullish"
+        if sig.get("hold_bars"):
+            status, exit_time, exit_price = resolve_time(df, sig["entry_time"], sig["sl"], sig["tp"], bull, sig["hold_bars"], TF_SECONDS[sig["timeframe"]])
+            if status != "open":
+                r = (exit_price - sig["entry"]) * (1 if bull else -1) / abs(sig["entry"] - sig["sl"])
+                sig.update(status="win" if r > 0 else "loss", exit_time=exit_time, exit_price=exit_price, closed_at=int(time.time()), r=round(r, 3))
+                save_strategy_state()
+                await manager.broadcast({"type": "strategy_update", "data": sig})
+            continue
+        if sig.get("order") == "limit":
+            status, fill_time, exit_time, exit_price = resolve_limit(df, sig["entry_time"], sig["entry"], sig["sl"], sig["tp"], bull, sig["expires_at"],
+                                                                     sig.get("tstop", 0), sig.get("tmfe", 0.0))
+            if status != sig["status"] or fill_time != sig.get("fill_time"):
+                if status in ("win", "loss") and exit_price is not None:
+                    sig["r"] = round((exit_price - sig["entry"]) * (1 if bull else -1) / abs(sig["entry"] - sig["sl"]), 3)
+                sig.update(status=status, fill_time=fill_time, exit_time=exit_time, exit_price=exit_price,
+                           closed_at=int(time.time()) if status not in ("open", "pending") else None)
+                save_strategy_state()
+                await manager.broadcast({"type": "strategy_update", "data": sig})
+            continue
+        if sig.get("trail"):
+            status, exit_time, exit_price, stop, r = resolve_trail(df, sig["entry_time"], sig["entry"], sig["sl0"], bull, sig["trail"])
+            moved = abs(stop - sig["sl"]) > 1e-12
+            sig["sl"] = stop
+            if status != "open":
+                sig.update(status=status, closed_at=int(time.time()), exit_time=exit_time, exit_price=exit_price, r=r)
+            if status != "open" or moved:
+                save_strategy_state()
+                await manager.broadcast({"type": "strategy_update", "data": sig})
+            continue
         status, exit_time, exit_price = resolve_outcome(df, sig["entry_time"], sig["sl"], sig["tp"], bull)
         if status != "open":
             sig["status"] = status
@@ -903,147 +1271,342 @@ async def update_open_signals(system: str, symbol: str, df: pd.DataFrame):
             await manager.broadcast({"type": "strategy_update", "data": sig})
 
 
-async def scan_scalp_symbol(symbol: str, sem: asyncio.Semaphore):
+async def scan_generic(system: str, symbol: str, timeframe: str, limit: int, check, sem: asyncio.Semaphore):
     async with sem:
         try:
-            h4 = await fetch_ohlc(symbol, "4h", 300)
-            m15 = await fetch_ohlc(symbol, "15m", 300)
-            m5 = await fetch_ohlc(symbol, "5m", 300)
+            df = await fetch_ohlc(symbol, timeframe, limit)
         except Exception:
             return
-    await update_open_signals("scalp", symbol, m5)
+    await update_open_signals(system, symbol, df)
     try:
-        sig = await asyncio.to_thread(check_scalp_signal, symbol, h4, m15, m5)
+        sig = await asyncio.to_thread(check, symbol, df)
     except Exception:
-        log.exception("check_scalp_signal lỗi %s", symbol)
+        log.exception("check %s lỗi %s", system, symbol)
         return
-    if sig and sig["id"] not in strategy_seen and not has_open_signal("scalp", symbol):
+    if sig and strategy_enabled["ny"] and system in NY_SYSTEMS and (int(sig["entry_time"]) // 3600) % 24 not in NY_HOURS:
+        return None
+    return sig
+
+
+async def emit_signal(system: str, symbol: str, sig: dict):
+    if sig.get("direction") == "bullish" and symbol in news_flags and time.time() - news_flags[symbol]["ts"] < NEWS_BLOCK_DAYS * 86400:
+        log.info("Bỏ lệnh MUA %s %s: có tin %s", system, symbol, news_flags[symbol]["type"])
+        return
+    if sig["id"] not in strategy_seen and not has_open_signal(system, symbol):
         strategy_seen.add(sig["id"])
-        strategy_signals["scalp"].appendleft(sig)
+        strategy_signals[system].appendleft(sig)
         save_strategy_state()
-        log.info("SCALP %s %s %s @ %s (SL %s / TP %s)", symbol, sig["direction"], sig["zone_kind"],
-                  sig["entry"], sig["sl"], sig["tp"])
+        log.info("%s %s %s @ %s (SL %s / TP %s)", system.upper(), symbol, sig["direction"], sig["entry"], sig["sl"], sig["tp"])
         await manager.broadcast({"type": "strategy_signal", "data": sig})
 
 
-async def scan_swing_symbol(symbol: str, sem: asyncio.Semaphore):
+async def generic_loop(system: str, timeframe: str, limit: int, check, interval: int, pre=None):
+    sem = asyncio.Semaphore(CONCURRENCY)
+    while True:
+        t0 = time.time()
+        if strategy_enabled[system]:
+            try:
+                if pre:
+                    await pre()
+                res = await asyncio.gather(*(scan_generic(system, s, timeframe, limit, check, sem) for s in active_symbols),
+                                           return_exceptions=True)
+                cands = [(s, r) for s, r in zip(active_symbols, res) if isinstance(r, dict)]
+                book = raw_signals.setdefault(system, {})
+                for s, r in cands:
+                    book[(s, int(r["entry_time"]), r["direction"])] = int(r["entry_time"])
+                cutoff = time.time() - 3 * 86400
+                for k in [k for k, v in book.items() if v < cutoff]:
+                    del book[k]
+                for s, r in cands:
+                    if system in CONSENSUS_SYSTEMS:
+                        t = int(r["entry_time"])
+                        n = sum(1 for (s2, t2, d2) in book if s2 != s and d2 == r["direction"] and t - CONSENSUS_WINDOW < t2 <= t)
+                        need = max(1, math.ceil(CONSENSUS_FRAC * len(active_symbols)))
+                        if n < need:
+                            if r["id"] not in consensus_skipped:
+                                consensus_skipped.add(r["id"])
+                                log.info("Bỏ %s %s %s: chỉ %d coin khác cùng tín hiệu trong 24h (cần %d)", system, s, r["direction"], n, need)
+                            continue
+                        r["consensus"] = n
+                        r["zone_kind"] = f'{r.get("zone_kind", "")} · đồng thuận {n + 1} coin'
+                    await emit_signal(system, s, r)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("%s loop lỗi", system)
+        else:
+            # hệ thống đã tắt: không tìm tín hiệu mới nhưng vẫn theo dõi các lệnh đang mở / chờ khớp tới khi đóng
+            for s in {x["symbol"] for x in strategy_signals[system] if x["status"] in ("open", "pending")}:
+                try:
+                    async with sem:
+                        df = await fetch_ohlc(s, timeframe, limit)
+                    await update_open_signals(system, s, df)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("%s cập nhật lệnh mở lỗi %s", system, s)
+        await asyncio.sleep(max(30.0, interval - (time.time() - t0)))
+
+
+# ─────────────────────────── HTF Zone alert ───────────────────────────
+# Không phải chiến lược có TP/SL: chỉ báo khi bias HTF (theo cú phá cấu trúc BOS/CHoCH gần nhất) đang tăng/giảm và giá hồi về vùng
+# OB / FVG / iFVG CÙNG hướng bias. Người dùng tự chờ CHoCH / engulfing / pin ở khung nhỏ. Backtest cho thấy kiểu vào lệnh này
+# không có edge tự động (~0R), nên đây chỉ là công cụ theo dõi/kỷ luật.
+ZONE_TFS = [t.strip() for t in os.getenv("ZONE_TFS", "4h,1d").split(",") if t.strip()]
+ZONE_INTERVAL = int(os.getenv("ZONE_INTERVAL", "120"))
+ZONE_SWING = {"1h": 8, "4h": 8, "1d": 5}
+ZONE_MAX_AGE_BARS = {"1h": 240, "4h": 180, "1d": 60}   # bỏ qua vùng quá cũ
+ZONE_COOLDOWN_BARS = {"1h": 12, "4h": 6, "1d": 3}     # gộp các lần chạm liên tiếp trong cùng 1 nhịp hồi: mỗi (coin, khung) tối đa 1 cảnh báo / N nến
+zone_last: dict[tuple, int] = {}
+# Giảm nhiễu (ước lượng backtest 90 ngày/10 coin: bỏ cả hai -> ~36 cảnh báo/ngày cho 63 coin H4, bật cả hai -> ~5/ngày):
+ZONE_ALIGN_D1 = os.getenv("ZONE_ALIGN_D1", "1") == "1"        # cảnh báo H4/H1 chỉ khi bias D1 cùng hướng
+ZONE_CONFLUENCE = os.getenv("ZONE_CONFLUENCE", "1") == "1"    # (OB/iFVG) chỉ báo khi vùng có OB (ước lượng: ~2/ngày cho 63 coin H4; đặt 0 để báo cả iFVG đơn lẻ: ~12/ngày)
+# FVG thường KHÔNG còn báo theo kiểu cũ: chỉ báo "FVG★" khi đạt đủ 4 quy tắc (fvg_filter.py): thuận xu hướng HTF, gắn với BOS/CHoCH,
+# nằm ở Discount/Premium, dùng một lần. Đặt ZONE_FVG_RULES=0 để tắt cảnh báo FVG★.
+ZONE_FVG_RULES = os.getenv("ZONE_FVG_RULES", "1") == "1"
+zone_d1: dict[str, pd.DataFrame] = {}   # nến D1 mới nhất của từng coin (khung lớn cho quy tắc xu hướng của FVG★ ở H4)
+ZONE_STATE_FILE = Path(__file__).parent / "zone_state.json"
+ZONE_KIND = {0: "OB", 1: "FVG", 2: "iFVG"}
+zone_alerts: deque = deque(maxlen=200)
+zone_seen: dict[str, int] = {}          # id vùng đã báo -> thời điểm báo (mỗi vùng chỉ báo 1 lần)
+zone_cache: dict[tuple, dict] = {}      # (symbol, tf) -> vùng + bias, chỉ tính lại khi có nến HTF mới đóng
+zone_first_pass = {"silent": False}     # lần chạy đầu tiên (chưa có file trạng thái): ghi nhận vùng đang chạm mà không báo
+
+
+def save_zone_state():
+    try:
+        cutoff = int(time.time()) - 90 * 86400
+        seen = {k: v for k, v in zone_seen.items() if v >= cutoff}
+        ZONE_STATE_FILE.write_text(json.dumps({"alerts": list(zone_alerts), "seen": seen}), encoding="utf-8")
+    except Exception:
+        log.exception("Lưu %s lỗi", ZONE_STATE_FILE.name)
+
+
+def load_zone_state():
+    if not ZONE_STATE_FILE.exists():
+        zone_first_pass["silent"] = True
+        return
+    try:
+        data = json.loads(ZONE_STATE_FILE.read_text(encoding="utf-8"))
+        zone_alerts.extend(reversed(data.get("alerts", [])))
+        zone_seen.update(data.get("seen", {}))
+    except Exception:
+        log.exception("Đọc %s lỗi", ZONE_STATE_FILE.name)
+
+
+def zone_struct_events(ohlc: pd.DataFrame, swl: int) -> list[dict]:
+    swings = smc.swing_highs_lows(ohlc, swing_length=swl)
+    struct = smc.bos_choch(ohlc, swings, close_break=True)
+    events = []
+    for i, row in struct.iterrows():
+        if pd.notna(row["CHOCH"]) and row["CHOCH"] != 0:
+            d = int(row["CHOCH"])
+        elif pd.notna(row["BOS"]) and row["BOS"] != 0:
+            d = int(row["BOS"])
+        else:
+            continue
+        if pd.isna(row["BrokenIndex"]) or int(row["BrokenIndex"]) >= len(ohlc):
+            continue
+        events.append({"dir": d, "swing_idx": int(i), "broken_idx": int(row["BrokenIndex"])})
+    events.sort(key=lambda e: e["broken_idx"])
+    return events
+
+
+def zone_build(df: pd.DataFrame, tf_sec: int, events: list[dict]) -> dict:
+    """OB (nến cực trị giữa swing và nến phá, biết khi nến phá đóng), FVG (biết từ nến k+1) và iFVG (FVG bị đóng cửa xuyên thủng
+    -> đảo vai trò). Vùng chết khi 1 nến ĐÓNG cửa xuyên cạnh xa."""
+    h, l, c = (df[k].astype(float).to_numpy() for k in ("high", "low", "close"))
+    ts = df["ts"].to_numpy()
+    n = len(df)
+    Z = {"top": [], "bot": [], "dir": [], "known": [], "dead": [], "kind": []}
+
+    def add(kind, d, top, bot, kb):
+        rest = c[kb + 1:]
+        hit = np.where(rest < bot)[0] if d > 0 else np.where(rest > top)[0]
+        dead = ts[kb + 1 + hit[0]] + tf_sec if len(hit) else np.inf
+        for key, v in zip(Z, (top, bot, d, ts[kb] + tf_sec, dead, kind)):
+            Z[key].append(v)
+        return int(kb + 1 + hit[0]) if len(hit) else None
+
+    for k in range(1, n - 1):
+        for d, cond, top, bot in ((1, l[k + 1] > h[k - 1], l[k + 1], h[k - 1]), (-1, h[k + 1] < l[k - 1], l[k - 1], h[k + 1])):
+            if cond and (top - bot) / c[k] >= 0.0002:
+                m = add(1, d, top, bot, k + 1)
+                if m is not None:
+                    add(2, -d, top, bot, m)
+    for ev in events:
+        a, b = ev["swing_idx"] + 1, ev["broken_idx"]
+        if b - a < 1:
+            continue
+        seg = np.arange(a, b)
+        d = ev["dir"]
+        k = seg[np.where(l[seg] == l[seg].min())[0][-1]] if d > 0 else seg[np.where(h[seg] == h[seg].max())[0][-1]]
+        add(0, d, h[k], l[k], b)
+    return {k: np.array(v) for k, v in Z.items()}
+
+
+def zone_check(symbol: str, tf: str, df_full: pd.DataFrame):
+    """df_full gồm cả nến đang chạy ở cuối. Trả về (alert, ids_mới) hoặc None."""
+    tf_sec = TF_SECONDS[tf]
+    closed = df_full.iloc[:-1].reset_index(drop=True)
+    if len(closed) < 120:
+        return None
+    last_ts = int(closed["ts"].iloc[-1])
+    cache = zone_cache.get((symbol, tf))
+    if cache is None or cache["last_ts"] != last_ts:
+        ohlc = closed[["open", "high", "low", "close", "volume"]]
+        events = zone_struct_events(ohlc, ZONE_SWING[tf])
+        if not events:
+            return None
+        e = events[-1]
+        cache = {"last_ts": last_ts, "Z": zone_build(closed, tf_sec, events), "bias": e["dir"],
+                 "bias_ts": int(closed["ts"].iloc[e["broken_idx"]]) + tf_sec,
+                 "leg_start": int(closed["ts"].iloc[e["swing_idx"]])}   # chỉ xét vùng hình thành trong đợt sóng tạo cú phá cấu trúc này
+        zone_cache[(symbol, tf)] = cache
+    Z, d = cache["Z"], cache["bias"]
+    if not len(Z["top"]):
+        return None
+    if int(time.time()) - zone_last.get((symbol, tf), 0) < ZONE_COOLDOWN_BARS[tf] * tf_sec:
+        return None
+    if ZONE_ALIGN_D1 and tf != "1d":
+        d1 = zone_cache.get((symbol, "1d"))
+        if d1 is None or d1["bias"] != d:
+            return None
+    live = df_full.iloc[-1]
+    lo, hi, cl = float(live["low"]), float(live["high"]), float(live["close"])
+    t = int(time.time())
+    m = (Z["dir"] == d) & (Z["known"] <= t) & (Z["dead"] > t) & (Z["known"] >= last_ts + tf_sec - ZONE_MAX_AGE_BARS[tf] * tf_sec)
+    m &= Z["known"] >= cache["leg_start"]
+    m &= (Z["top"] >= lo) & (Z["bot"] <= hi)                     # nến đang chạy chạm vùng
+    m &= (cl >= Z["bot"]) if d > 0 else (cl <= Z["top"])          # chưa bị xuyên thủng ở giá hiện tại
+    found = []
+    for z in np.where(m)[0]:
+        if int(Z["kind"][z]) == 1:      # FVG thường: chỉ báo qua fvg_check (đủ 4 quy tắc)
+            continue
+        zid = f"{symbol}-{tf}-{d}-{int(Z['kind'][z])}-{Z['top'][z]:.10g}-{Z['bot'][z]:.10g}-{int(Z['known'][z])}"
+        if zid not in zone_seen:
+            found.append({"id": zid, "kind": ZONE_KIND[int(Z["kind"][z])], "top": float(Z["top"][z]), "bot": float(Z["bot"][z]),
+                          "known": int(Z["known"][z])})
+    if not found:
+        return None
+    # Chỉ gộp các vùng THỰC SỰ chồng nhau (hội tụ): lấy vùng hẹp nhất làm mốc, cộng các vùng giao với nó; hiển thị phần giao nhau.
+    anchor = min(found, key=lambda x: x["top"] - x["bot"])
+    group = [x for x in found if x["top"] >= anchor["bot"] and x["bot"] <= anchor["top"]]
+    kinds = sorted({x["kind"] for x in group}, key=list(ZONE_KIND.values()).index)
+    if ZONE_CONFLUENCE and not ("OB" in kinds or len(kinds) >= 2):
+        return None
+    top, bot = min(x["top"] for x in group), max(x["bot"] for x in group)
+    if top <= bot:
+        top, bot = anchor["top"], anchor["bot"]
+    ids = [x["id"] for x in found]
+    alert = {
+        "id": "zone-" + anchor["id"], "symbol": symbol, "timeframe": tf, "direction": "bullish" if d > 0 else "bearish",
+        "kinds": kinds, "zone_top": top, "zone_bottom": bot,
+        "zone_since": min(x["known"] for x in group), "bias_since": cache["bias_ts"], "price": cl, "detected_at": t,
+    }
+    return alert, ids
+
+
+def fvg_check(symbol: str, tf: str, df_full: pd.DataFrame, d1_full: pd.DataFrame | None):
+    """Cảnh báo FVG★: FVG đạt đủ 4 quy tắc (thuận xu hướng D1/khung lớn, gắn với BOS/CHoCH, Discount/Premium, dùng một lần), chưa bị chạm ở các nến
+    đã đóng, và nến đang chạy vừa chạm vào. Trả về (alert, ids) hoặc None."""
+    if len(df_full) < 150 or (tf != "1d" and (d1_full is None or len(d1_full) < 150)):
+        return None
+    last_ts = int(df_full["ts"].iloc[-2])
+    d1_ts = int(d1_full["ts"].iloc[-2]) if (tf != "1d" and d1_full is not None) else 0
+    key = (symbol, tf, "fvg")
+    cache = zone_cache.get(key)
+    if cache is None or cache["last_ts"] != last_ts or cache["d1_ts"] != d1_ts:
+        f = find_valid_fvgs(df_full, htf_df=None if tf == "1d" else d1_full, swing_len=ZONE_SWING[tf],
+                            htf_swing_len=ZONE_SWING["1d"], max_age=ZONE_MAX_AGE_BARS[tf])
+        cache = {"last_ts": last_ts, "d1_ts": d1_ts, "f": f[f["valid_now"]] if len(f) else f}
+        zone_cache[key] = cache
+    f = cache["f"]
+    if f is None or f.empty:
+        return None
+    live = df_full.iloc[-1]
+    lo, hi, cl = float(live["low"]), float(live["high"]), float(live["close"])
+    hit = []
+    for r in f.itertuples():
+        if lo <= r.top and hi >= r.bottom and ((cl >= r.bottom) if r.dir > 0 else (cl <= r.top)):
+            zid = f"{symbol}-{tf}-fvg-{r.dir}-{r.top:.10g}-{r.bottom:.10g}-{int(r.formed_time)}"
+            if zid not in zone_seen:
+                hit.append((r, zid))
+    if not hit:
+        return None
+    r = max(hit, key=lambda x: x[0].formed_idx)[0]
+    alert = {
+        "id": "zone-" + max(hit, key=lambda x: x[0].formed_idx)[1], "symbol": symbol, "timeframe": tf,
+        "direction": "bullish" if r.dir > 0 else "bearish", "kinds": ["FVG★"], "zone_top": float(r.top), "zone_bottom": float(r.bottom),
+        "zone_since": int(r.formed_time), "bias_since": int(r.formed_time), "price": cl, "detected_at": int(time.time()),
+        "note": f"Đủ 4 quy tắc · {'Discount' if r.dir > 0 else 'Premium'}",
+    }
+    return alert, [x[1] for x in hit]
+
+
+async def zone_emit(alert: dict, ids: list[str], cooldown_key=None):
+    now = int(time.time())
+    for zid in ids:
+        zone_seen[zid] = now
+    if zone_first_pass["silent"]:
+        return
+    if cooldown_key:
+        zone_last[cooldown_key] = now
+    zone_alerts.appendleft(alert)
+    save_zone_state()
+    up = alert["direction"] == "bullish"
+    tf, symbol = alert["timeframe"], alert["symbol"]
+    log.info("ZONE %s %s %s -> %s %s-%s", symbol, tf, "TĂNG" if up else "GIẢM", "+".join(alert["kinds"]), alert["zone_bottom"], alert["zone_top"])
+    await manager.broadcast({"type": "zone_alert", "data": alert})
+    head = alert.get("note") or f"bias {'TĂNG' if up else 'GIẢM'}"
+    await send_telegram(
+        f"🎯 <b>{symbol}</b> {tf.upper()} {head} — giá hồi về vùng {'+'.join(alert['kinds'])} "
+        f"{fmt_price(alert['zone_bottom'])}–{fmt_price(alert['zone_top'])}\nGiá hiện tại {fmt_price(alert['price'])}. "
+        f"Chờ CHoCH / engulfing / pin ở M1–M15. Vô hiệu nếu nến {tf.upper()} đóng cửa {'dưới' if up else 'trên'} vùng.")
+
+
+async def zone_scan_symbol(symbol: str, tf: str, sem: asyncio.Semaphore):
     async with sem:
         try:
-            d1 = await fetch_ohlc(symbol, "1d", 300)
-            h4 = await fetch_ohlc(symbol, "4h", 300)
+            df = await fetch_ohlc(symbol, tf, 500)
         except Exception:
             return
-    await update_open_signals("swing", symbol, h4)
+    if tf == "1d":
+        zone_d1[symbol] = df
     try:
-        sig = await asyncio.to_thread(check_swing_signal, symbol, d1, h4)
+        res = await asyncio.to_thread(zone_check, symbol, tf, df)
     except Exception:
-        log.exception("check_swing_signal lỗi %s", symbol)
-        return
-    if sig and sig["id"] not in strategy_seen and not has_open_signal("swing", symbol):
-        strategy_seen.add(sig["id"])
-        strategy_signals["swing"].appendleft(sig)
-        save_strategy_state()
-        log.info("SWING %s %s %s @ %s (SL %s / TP %s)", symbol, sig["direction"], sig["zone_kind"],
-                  sig["entry"], sig["sl"], sig["tp"])
-        await manager.broadcast({"type": "strategy_signal", "data": sig})
-
-
-async def scan_m1_symbol(symbol: str, sem: asyncio.Semaphore):
-    async with sem:
+        log.exception("zone_check lỗi %s %s", symbol, tf)
+        res = None
+    if res:
+        await zone_emit(res[0], res[1], (symbol, tf))
+    if ZONE_FVG_RULES:
         try:
-            h1 = await fetch_ohlc(symbol, "1h", 300)
-            m5 = await fetch_ohlc(symbol, "5m", 300)
-            m1 = await fetch_ohlc(symbol, "1m", 400)
+            res = await asyncio.to_thread(fvg_check, symbol, tf, df, zone_d1.get(symbol))
         except Exception:
+            log.exception("fvg_check lỗi %s %s", symbol, tf)
             return
-    await update_open_signals("m1", symbol, m1)
-    try:
-        sig = await asyncio.to_thread(check_m1_signal, symbol, h1, m5, m1)
-    except Exception:
-        log.exception("check_m1_signal lỗi %s", symbol)
-        return
-    if sig and sig["id"] not in strategy_seen and not has_open_signal("m1", symbol):
-        strategy_seen.add(sig["id"])
-        strategy_signals["m1"].appendleft(sig)
-        save_strategy_state()
-        log.info("M1 %s %s @ %s (SL %s / TP %s)", symbol, sig["direction"], sig["entry"], sig["sl"], sig["tp"])
-        await manager.broadcast({"type": "strategy_signal", "data": sig})
+        if res:
+            await zone_emit(res[0], res[1])
 
 
-async def scan_nr7_symbol(symbol: str, sem: asyncio.Semaphore):
-    async with sem:
-        try:
-            h1 = await fetch_ohlc(symbol, "1h", 500)  # 500 nến ~ 20 ngày: đủ để theo dõi lệnh mở lâu (RR cao)
-        except Exception:
-            return
-    await update_open_signals("nr7", symbol, h1)
-    try:
-        sig = await asyncio.to_thread(check_nr7_signal, symbol, h1)
-    except Exception:
-        log.exception("check_nr7_signal lỗi %s", symbol)
-        return
-    if sig and sig["id"] not in strategy_seen and not has_open_signal("nr7", symbol):
-        strategy_seen.add(sig["id"])
-        strategy_signals["nr7"].appendleft(sig)
-        save_strategy_state()
-        log.info("NR7 %s %s @ %s (SL %s / TP %s)", symbol, sig["direction"], sig["entry"], sig["sl"], sig["tp"])
-        await manager.broadcast({"type": "strategy_signal", "data": sig})
-
-
-async def nr7_loop():
+async def zone_loop():
     sem = asyncio.Semaphore(CONCURRENCY)
     while True:
         t0 = time.time()
-        if strategy_enabled["nr7"]:
+        if strategy_enabled.get("zone"):
             try:
-                await asyncio.gather(*(scan_nr7_symbol(s, sem) for s in active_symbols), return_exceptions=True)
+                for tf in sorted(ZONE_TFS, key=lambda x: -TF_SECONDS[x]):   # khung lớn trước để có bias D1 cho lọc đồng thuận của H4
+                    await asyncio.gather(*(zone_scan_symbol(s, tf, sem) for s in active_symbols), return_exceptions=True)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("NR7 loop lỗi")
-        await asyncio.sleep(max(30.0, NR7_INTERVAL - (time.time() - t0)))
-
-
-async def m1_loop():
-    sem = asyncio.Semaphore(CONCURRENCY)
-    while True:
-        t0 = time.time()
-        if strategy_enabled["m1"]:
-            try:
-                await asyncio.gather(*(scan_m1_symbol(s, sem) for s in active_symbols), return_exceptions=True)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("M1 loop lỗi")
-        await asyncio.sleep(max(15.0, M1_INTERVAL - (time.time() - t0)))
-
-
-async def scalp_loop():
-    sem = asyncio.Semaphore(CONCURRENCY)
-    while True:
-        t0 = time.time()
-        if strategy_enabled["scalp"]:
-            try:
-                await asyncio.gather(*(scan_scalp_symbol(s, sem) for s in active_symbols), return_exceptions=True)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("Scalp loop lỗi")
-        await asyncio.sleep(max(5.0, SCALP_INTERVAL - (time.time() - t0)))
-
-
-async def swing_loop():
-    sem = asyncio.Semaphore(CONCURRENCY)
-    while True:
-        t0 = time.time()
-        if strategy_enabled["swing"]:
-            try:
-                await asyncio.gather(*(scan_swing_symbol(s, sem) for s in active_symbols), return_exceptions=True)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("Swing loop lỗi")
-        await asyncio.sleep(max(10.0, SWING_INTERVAL - (time.time() - t0)))
+                log.exception("zone loop lỗi")
+            if zone_first_pass["silent"]:
+                zone_first_pass["silent"] = False
+                save_zone_state()
+                log.info("Zone alert: đã ghi nhận %d vùng đang chạm (không báo lần đầu)", len(zone_seen))
+        await asyncio.sleep(max(30.0, ZONE_INTERVAL - (time.time() - t0)))
 
 
 # ─────────────────────────── App ───────────────────────────
@@ -1051,8 +1614,11 @@ async def swing_loop():
 async def lifespan(app: FastAPI):
     global exchange, kline_exchange, http, active_symbols
     load_strategy_state()
+    load_zone_state()
     exchange = ccxt.binanceusdm({"enableRateLimit": True})
     kline_exchange = ccxt.binanceusdm({"enableRateLimit": True})
+    global volwatch_exchange
+    volwatch_exchange = ccxt.binanceusdm({"enableRateLimit": True})
     http = httpx.AsyncClient()
     try:
         await exchange.load_markets()
@@ -1068,9 +1634,15 @@ async def lifespan(app: FastAPI):
     log.info("Theo dõi %d symbols × %s | Telegram: %s", len(active_symbols), TIMEFRAMES,
              "ON" if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID else "OFF")
     tasks = [asyncio.create_task(scanner_loop()), asyncio.create_task(screener_loop()),
-             asyncio.create_task(kline_relay_loop()), asyncio.create_task(scalp_loop()),
-             asyncio.create_task(swing_loop()), asyncio.create_task(m1_loop()),
-             asyncio.create_task(nr7_loop())]
+             asyncio.create_task(kline_relay_loop()), asyncio.create_task(volwatch_loop()), asyncio.create_task(news_loop()), asyncio.create_task(feed_loop()),
+             asyncio.create_task(zone_loop()),
+             asyncio.create_task(generic_loop("pb4h", "4h", 600, check_pb_signal, PB_INTERVAL)),
+             asyncio.create_task(generic_loop("nr74h", "4h", 600, check_nr74_signal, NR74_INTERVAL)),
+             asyncio.create_task(generic_loop("bo4h", "4h", 600, check_bo_signal, BO_INTERVAL, pre=refresh_btc_regime)),
+             asyncio.create_task(generic_loop("st4h", "4h", 600, check_st_signal, ST_INTERVAL)),
+             asyncio.create_task(generic_loop("vc4h", "4h", 300, check_vc_signal, ST_INTERVAL)),
+             asyncio.create_task(generic_loop("bo15", "4h", 600, partial(check_bo_signal, rr=BO15_RR, system="bo15"), BO_INTERVAL, pre=refresh_btc_regime)),
+             asyncio.create_task(generic_loop("st15", "4h", 600, partial(check_st_signal, rr=ST15_RR, system="st15"), ST_INTERVAL))]
     yield
     for task in tasks:
         task.cancel()
@@ -1079,6 +1651,7 @@ async def lifespan(app: FastAPI):
             await task
     await exchange.close()
     await kline_exchange.close()
+    await volwatch_exchange.close()
     await http.aclose()
 
 
@@ -1100,16 +1673,36 @@ async def get_signals():
     return list(history)
 
 
+@app.get("/api/feed")
+async def get_feed():
+    return list(feed_items)
+
+
+@app.get("/api/news-flags")
+async def get_news_flags():
+    return news_flags
+
+
+@app.get("/api/volwatch")
+async def get_volwatch():
+    return volwatch_state
+
+
 @app.get("/api/screener")
 async def get_screener():
     return screener_state
 
 
+@app.get("/api/zone-alerts")
+async def get_zone_alerts():
+    return {"enabled": strategy_enabled.get("zone", True), "timeframes": ZONE_TFS, "alerts": list(zone_alerts)}
+
+
 @app.get("/api/strategy/signals")
-async def get_strategy_signals(system: str = Query("scalp")):
+async def get_strategy_signals(system: str = Query("pb4h")):
     if system not in strategy_signals:
         raise HTTPException(400, f"system không hợp lệ: {system}")
-    rr = {"scalp": SCALP_RR, "swing": SWING_RR, "m1": M1_RR, "nr7": NR7_RR}[system]
+    rr = {"pb4h": None if PB_EXIT == "trail" else PB_RR, "nr74h": NR74_RR, "bo4h": BO_RR, "st4h": ST_RR, "bo15": BO15_RR, "st15": ST15_RR, "news": None, "vc4h": round(VC_TP_ATR / VC_SL_ATR, 2)}[system]
     return {"enabled": strategy_enabled[system], "rr": rr, "signals": list(strategy_signals[system])}
 
 
@@ -1181,6 +1774,7 @@ async def ws_endpoint(ws: WebSocket):
         await ws.send_json({"type": "history", "data": list(history)})
         await ws.send_json({"type": "strategy_history",
                              "data": {k: list(v) for k, v in strategy_signals.items()}})
+        await ws.send_json({"type": "zone_history", "data": list(zone_alerts)})
         await ws.send_json({"type": "status", "data": status_payload()})
         while True:
             msg = await ws.receive_text()

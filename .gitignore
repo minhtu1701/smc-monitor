@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .env
 strategy_state.json
+*.bak_*
+*.log
+feed_log.jsonl
+zone_state.json
+strategy_state.backup_*.json
