@@ -165,6 +165,9 @@ PB_ENTRY_ATR = float(os.getenv("PB_ENTRY_ATR", "1.0"))
 PB_TSTOP = int(os.getenv("PB_TSTOP", "24"))
 PB_TMFE = float(os.getenv("PB_TMFE", "2.0"))
 PB_SL_ATR = float(os.getenv("PB_SL_ATR", "2.0"))
+# Dùng CHUNG cho st4h và st15 (hai hệ thống chỉ khác TP: ST_RR vs ST15_RR).
+# Vào bằng LIMIT tốt hơn 0.25 ATR là điều kiện SỐNG CÒN: cùng tín hiệu, cùng SL 1 ATR,
+# vào ở giá đóng cho -0.611R còn vào bằng limit cho +0.396R (TP 1:1.5, 98 coin/5 năm).
 ST4_ENTRY_ATR = float(os.getenv("ST4_ENTRY_ATR", "0.25"))
 ST4_SL_ATR = float(os.getenv("ST4_SL_ATR", "1.0"))
 BO_ENTRY_ATR = float(os.getenv("BO_ENTRY_ATR", "0"))
@@ -193,7 +196,10 @@ VC_VOLX = float(os.getenv("VC_VOLX", "3.0"))
 #   BO: cần ADX >= 19 (có xu hướng thật) -> E +0.46/+0.75R thành +0.58/+0.91R, lãi/sụt giảm 3.74 -> 4.15
 #   VC: không chỉ báo nào cải thiện -> giữ nguyên.
 PB_MIN_BBW_PCTL = float(os.getenv("PB_MIN_BBW_PCTL", "0.33"))
-ST_MAX_STOCH = float(os.getenv("ST_MAX_STOCH", "87"))
+# Lọc Stochastic: >= 100 là TẮT. Đã đo 20/09/2026 và TẮT lại — nâng kỳ vọng mỗi lệnh của ST
+# (+1.096 -> +1.318R) nhưng cắt 296 lệnh VẪN ĐANG LÃI (+0.422R, dương 5/6 năm), nên ở cấp
+# danh mục gộp làm lãi/sụt tụt 9.19 -> 8.16. Cùng khuôn mẫu với các bộ lọc ST đã loại.
+ST_MAX_STOCH = float(os.getenv("ST_MAX_STOCH", "100"))
 BO_MIN_ADX = float(os.getenv("BO_MIN_ADX", "19"))
 
 
@@ -265,6 +271,9 @@ strategy_enabled: dict = {**{k: True for k in STRATEGY_SYSTEMS}, "zone": True, "
 # "ny" = chỉ nhận tín hiệu khi nến H4 đóng lúc 16:00/20:00 UTC (phiên New York). Backtest 98 coin: PB +0.22R -> +0.46R, BO +0.25R -> +0.35R, ST +0.24R -> +0.34R.
 # BO H4 không dùng lọc NY: nghiên cứu bối cảnh cho thấy lọc giờ làm BO xấu đi (lãi/sụt giảm 1.19 -> 0.68); BO dùng lọc sức mạnh tương đối thay thế.
 NY_SYSTEMS = ("pb4h", "st4h", "st15")
+# Các hệ thống dùng CHUNG một tín hiệu gốc -> không được tính là "đồng thuận" của nhau.
+# st4h và st15 đều là Supertrend flip H4, chỉ khác TP (1:8 vs 1:1.5).
+SAME_SIGNAL = {"st4h": {"st4h", "st15"}, "st15": {"st4h", "st15"}}
 NY_HOURS = (16, 20)
 strategy_signals: dict[str, deque] = {k: deque(maxlen=100) for k in STRATEGY_SYSTEMS}
 strategy_seen: set[str] = set()
@@ -293,7 +302,14 @@ def save_strategy_state():
     lại mất hết lịch sử lời/lỗ, vô lý với tính năng Log."""
     try:
         data = {k: list(v) for k, v in strategy_signals.items()}
-        STRATEGY_STATE_FILE.write_text(json.dumps(data), encoding="utf-8")
+        # Sổ đếm đồng thuận cũng phải sống qua restart: nếu không, sau mỗi lần watchdog bật lại
+        # server thì book rỗng và lệnh BO bị chặn oan cho tới khi gom đủ 24h tín hiệu mới.
+        data["__raw__"] = [[sysname, s, int(t), d] for sysname, bk in raw_signals.items() for (s, t, d) in bk]
+        # Ghi nguyên tử: write_text cắt file về 0 byte TRƯỚC khi ghi, nên nếu watchdog kill
+        # server đúng lúc đó thì file JSON hỏng -> mất sạch lệnh đang mở và lịch sử lời/lỗ.
+        tmp = STRATEGY_STATE_FILE.with_suffix(STRATEGY_STATE_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, STRATEGY_STATE_FILE)
     except Exception:
         log.exception("Lưu %s lỗi", STRATEGY_STATE_FILE.name)
 
@@ -303,10 +319,21 @@ def load_strategy_state():
         return
     try:
         data = json.loads(STRATEGY_STATE_FILE.read_text(encoding="utf-8"))
+        try:
+            for sysname, s, t, d in data.get("__raw__", []):
+                raw_signals.setdefault(sysname, {})[(s, int(t), d)] = int(t)
+        except Exception:
+            log.exception("Bỏ qua sổ đồng thuận hỏng")
         for k, v in data.items():
-            if k in strategy_signals:
-                strategy_signals[k] = deque(v, maxlen=100)
-                strategy_seen.update(sig["id"] for sig in v)
+            if k not in strategy_signals:
+                continue
+            try:                                  # hỏng một hệ thống thì không kéo các hệ thống khác theo
+                ids = [sig["id"] for sig in v]
+            except Exception:
+                log.exception("Bỏ qua state hỏng của %s", k)
+                continue
+            strategy_signals[k] = deque(v, maxlen=100)
+            strategy_seen.update(ids)
         log.info("Đã nạp lại %d tín hiệu strategy từ %s", sum(len(v) for v in data.values()), STRATEGY_STATE_FILE.name)
     except Exception:
         log.exception("Đọc %s lỗi", STRATEGY_STATE_FILE.name)
@@ -752,18 +779,24 @@ def wilder_atr(h: np.ndarray, l: np.ndarray, c: np.ndarray, n: int = 14) -> np.n
 
 
 def resolve_limit(df: pd.DataFrame, placed: int, limit: float, sl: float, tp: float, bull: bool, expires: int, tstop: int = 0, tmfe: float = 0.0,
-                  tf_sec: int | None = None, hold: int = 0):
+                  tf_sec: int | None = None, hold: int = 0, known_fill: int | None = None):
     """Lệnh limit đặt lúc `placed` (giờ đóng nến tín hiệu), hiệu lực tới `expires`. Khớp khi giá chạm limit; nếu chính nến khớp chạm SL
     -> thua (bảo thủ, TP chưa xét ở nến khớp). Sau đó SL kiểm tra trước TP như resolve_outcome.
     tstop > 0: sau tstop nến kể từ nến khớp mà giá chưa đi được tmfe R -> đóng ở giá đóng nến thứ tstop (chỉ xét nến đã đóng).
     hold > 0: sau hold nến kể từ nến khớp mà chưa chạm SL/TP -> đóng ở giá đóng (thoát theo thời gian).
     Trả về (status, fill_time, exit_time, exit_price) với status in pending/expired/open/win/loss."""
-    fill = None
+    fill = known_fill
     risk = abs(limit - sl)
     mfe, nb = 0.0, 0
     now = time.time()
     tf_sec = tf_sec or TF_SECONDS["4h"]
-    for row in df[df["ts"] >= placed].itertuples():
+    # Lệnh đã khớp thì tính TIẾP từ nến khớp, không suy lại từ đầu: nếu để nguyên, một lệnh
+    # giữ lâu hơn cửa sổ nến tải về sẽ có nến đầu tiên thoả ts >= expires và bị đổi nhầm
+    # thành "expired" (mất trắng khỏi sổ, mà toàn rơi vào lệnh thắng lớn đang chạy dài).
+    # Đã biết lệnh khớp lúc nào thì quét từ đó; nhánh "expired" nằm trong `if fill is None`
+    # nên không bao giờ chạm tới nữa. Nếu nến khớp đã trôi khỏi cửa sổ, ta vẫn quét phần
+    # còn thấy được để bắt SL/TP, thay vì kết luận sai.
+    for row in df[df["ts"] >= (placed if fill is None else fill)].itertuples():
         if fill is None:
             if row.ts >= expires:
                 return "expired", None, None, None
@@ -772,6 +805,8 @@ def resolve_limit(df: pd.DataFrame, placed: int, limit: float, sl: float, tp: fl
                 if (row.low <= sl) if bull else (row.high >= sl):
                     return "loss", fill, fill, sl
             continue
+        if row.ts == fill:
+            continue                              # nến khớp không tính vào nb/mfe (giữ như cũ)
         hit_sl = row.low <= sl if bull else row.high >= sl
         hit_tp = row.high >= tp if bull else row.low <= tp
         if hit_sl or hit_tp:
@@ -1116,15 +1151,19 @@ def check_st_signal(symbol: str, h4: pd.DataFrame, rr: float = ST_RR, system: st
     else:
         return None
     ci = float(c[i])
-    if system == "st4h" and ST4_SHORT_ONLY and bull:
+    if ST4_SHORT_ONLY and bull:
         return None
-    if system == "st4h" and ST4_ENTRY_ATR > 0:
-        k_ = stoch_k(h, l, c, i)
-        if (k_ if bull else 100 - k_) >= ST_MAX_STOCH:
-            return None
+    # st4h VÀ st15 dùng CHUNG cách vào lệnh (limit ST4_ENTRY_ATR tốt hơn, SL ST4_SL_ATR x ATR),
+    # chỉ khác TP. Trước đây st15 rơi xuống nhánh vào giá đóng + SL 2 ATR -> kỳ vọng -0.007R
+    # (backtest bản limit: +0.396R). Xem ghi chú ở phần cấu hình ST.
+    if ST4_ENTRY_ATR > 0:
+        if ST_MAX_STOCH < 100:
+            k_ = stoch_k(h, l, c, i)
+            if (k_ if bull else 100 - k_) >= ST_MAX_STOCH:
+                return None
         sign = 1 if bull else -1
         limit = ci - sign * ST4_ENTRY_ATR * float(atr[i])
-        return limit_signal("st4h", symbol, h4, int(d["ts"].iloc[i]) + TF_SECONDS["4h"], bull, limit, limit - sign * ST4_SL_ATR * float(atr[i]), rr,
+        return limit_signal(system, symbol, h4, int(d["ts"].iloc[i]) + TF_SECONDS["4h"], bull, limit, limit - sign * ST4_SL_ATR * float(atr[i]), rr,
                             "Supertrend flip · limit")
     risk = ST_SL_ATR * float(atr[i])
     if risk / ci < ST_MIN_RISK or risk / ci > ST_MAX_RISK:
@@ -1181,7 +1220,7 @@ async def update_open_signals(system: str, symbol: str, df: pd.DataFrame):
             status, fill_time, exit_time, exit_price = resolve_limit(df, sig["entry_time"], sig["entry"], sig["sl"], sig["tp"], bull, sig["expires_at"],
                                                                      sig.get("tstop", 0), sig.get("tmfe", 0.0),
                                                                      sig.get("tf_sec") or TF_SECONDS.get(sig["timeframe"], TF_SECONDS["4h"]),
-                                                                     sig.get("hold_limit", 0))
+                                                                     sig.get("hold_limit", 0), sig.get("fill_time"))
             if status != sig["status"] or fill_time != sig.get("fill_time"):
                 if status in ("win", "loss") and exit_price is not None:
                     sig["r"] = round((exit_price - sig["entry"]) * (1 if bull else -1) / abs(sig["entry"] - sig["sl"]), 3)
@@ -1246,8 +1285,9 @@ def confluence_count(system: str, symbol: str, direction: str, entry_time: int) 
     """Số hệ thống KHÁC đã báo cùng coin, cùng chiều trong CONFLUENCE_H giờ TRƯỚC đó. Chỉ để hiển thị."""
     lo = int(entry_time) - CONFLUENCE_H * 3600
     seen = set()
+    same = SAME_SIGNAL.get(system, {system})      # st4h/st15 là CÙNG một tín hiệu Supertrend
     for other in STRATEGY_SYSTEMS:
-        if other == system:
+        if other in same:
             continue
         for s in strategy_signals[other]:
             if s["symbol"] == symbol and s["direction"] == direction and lo <= int(s["entry_time"]) <= int(entry_time):
@@ -1271,8 +1311,14 @@ async def scan_generic(system: str, symbol: str, timeframe: str, limit: int, che
         try:
             df = await fetch_ohlc(symbol, timeframe, limit)
         except Exception:
+            log.warning("tải nến %s %s %s lỗi", system, symbol, timeframe, exc_info=True)
             return
-    await update_open_signals(system, symbol, df)
+    try:
+        await update_open_signals(system, symbol, df)
+    except Exception:
+        # Trước đây lỗi ở đây thoát ra gather(return_exceptions=True) rồi bị lọc bỏ im lặng:
+        # coin đó vừa không cập nhật lệnh đang mở, vừa không bao giờ sinh tín hiệu mới nữa.
+        log.exception("cập nhật lệnh mở %s %s lỗi", system, symbol)
     try:
         sig = await asyncio.to_thread(check, symbol, df)
     except Exception:
