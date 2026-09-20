@@ -132,6 +132,22 @@ SNR_MIN_ATR_RATIO = float(os.getenv("SNR_MIN_ATR_RATIO", "0.85"))
 # Xu hướng khung NGÀY: chỉ vào khi EMA nhanh/chậm của chính khung 1d cùng chiều lệnh.
 SNR_D1_FAST = int(os.getenv("SNR_D1_FAST", "20"))
 SNR_D1_SLOW = int(os.getenv("SNR_D1_SLOW", "50"))
+
+# ─── Coin MỚI NIÊM YẾT: BÁN ở giá đóng ngày thứ NL_DAY sau khi lên sàn ───
+# 587 lần niêm yết Binance Futures 2021-2026, trong đó 115 coin ĐÃ HUỶ niêm yết
+# -> không thiên lệch sống sót. Giá sau niêm yết trôi giảm bền và nhất quán:
+#   trung vị -10.2% sau 7 ngày | -21.9% sau 30 | -39.0% sau 90 | -52.1% sau 180
+#   âm 6/6 năm; thanh khoản ngày đầu càng CAO càng sập mạnh (-30.7% vs -12.9% ở 30 ngày).
+# Cấu hình dưới đây: E +0.201R, thắng 60.5%, DƯƠNG 6/6 NĂM, giữ trung vị 12 ngày, ~48 lệnh/năm.
+# 168/168 cấu hình tham số đều có kỳ vọng dương; vùng thắng đơn điệu (TP thấp, SL rộng, vào sớm).
+# Tương quan -0.26 với cụm thuận xu hướng (BO/PB/SNR) -> danh mục gộp 7.97 -> 8.47.
+# SL rất rộng (~41% giá) nên phí gần như vô hại: 0.1% chỉ tốn 0.005R.
+NL_DAY = int(os.getenv("NL_DAY", "5"))           # vào ở giá đóng ngày thứ 5 (ngày 0 = ngày niêm yết)
+NL_SL_ADR = float(os.getenv("NL_SL_ADR", "2.0"))  # SL = 2 x biên độ ngày trung bình của 6 ngày đầu
+NL_RR = float(os.getenv("NL_RR", "1.0"))
+NL_HOLD_D = int(os.getenv("NL_HOLD_D", "60"))
+NL_LATE_D = int(os.getenv("NL_LATE_D", "2"))      # cho phép vào trễ tối đa 2 ngày (phòng server nghỉ)
+NL_INTERVAL = int(os.getenv("NL_INTERVAL", "1800"))
 SNR_INTERVAL = int(os.getenv("SNR_INTERVAL", "900"))
 # ── Lọc funding ngược đám đông ──
 # Chỉ vào lệnh khi funding đang nghiêng về phía NGƯỢC với lệnh (mua khi funding âm, bán khi funding dương):
@@ -266,7 +282,7 @@ active_symbols: list[str] = list(SYMBOLS)
 history: deque = deque(maxlen=200)   # tín hiệu gần nhất (mới nhất đứng đầu)
 seen: set[str] = set()               # chống gửi trùng
 status = {"last_scan": None, "duration": None, "scans": 0}
-STRATEGY_SYSTEMS = ("pb4h", "bo4h", "st4h", "st15", "news", "vc4h", "snr1d")
+STRATEGY_SYSTEMS = ("pb4h", "bo4h", "st4h", "st15", "news", "vc4h", "snr1d", "nl1d")
 strategy_enabled: dict = {**{k: True for k in STRATEGY_SYSTEMS}, "zone": True, "ny": True}  # "zone" = cảnh báo vùng HTF (không phải chiến lược vào lệnh)
 # "ny" = chỉ nhận tín hiệu khi nến H4 đóng lúc 16:00/20:00 UTC (phiên New York). Backtest 98 coin: PB +0.22R -> +0.46R, BO +0.25R -> +0.35R, ST +0.24R -> +0.34R.
 # BO H4 không dùng lọc NY: nghiên cứu bối cảnh cho thấy lọc giờ làm BO xấu đi (lãi/sụt giảm 1.19 -> 0.68); BO dùng lọc sức mạnh tương đối thay thế.
@@ -293,6 +309,7 @@ NEWS_BLOCK_DAYS = 30
 NEWS_SL_PCT = float(os.getenv("NEWS_SL_PCT", "10"))
 NEWS_HOLD_H = int(os.getenv("NEWS_HOLD_H", "24"))
 NEWS_MAX_AGE_MIN = 30   # chỉ vào lệnh nếu phát hiện tin trong 30 phút sau khi đăng
+listing_dates: dict[str, int] = {}  # symbol -> giờ NIÊM YẾT (giây), lấy từ onboardDate của exchangeInfo
 btc_h4_r30: dict[int, float] = {}  # ts nến H4 BTC -> lợi nhuận 180 nến (30 ngày) của BTC, dùng cho lọc sức mạnh tương đối của BO H4
 btc_h4_regime: dict[int, int] = {}  # ts nến H4 BTC -> +1 nếu đóng trên EMA200, -1 nếu dưới (dùng làm filter cho Breakout H4)
 
@@ -1124,6 +1141,99 @@ def check_snr_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
     return None
 
 
+async def fetch_klines_raw(symbol: str, interval: str, limit: int = 200) -> pd.DataFrame:
+    """Tải nến bằng endpoint THÔ — coin vừa niêm yết chưa có trong markets mà ccxt nạp lúc khởi động."""
+    raw = await exchange.fapiPublicGetKlines({"symbol": symbol, "interval": interval, "limit": limit})
+    return pd.DataFrame([[int(r[0]) // 1000, float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
+                         for r in raw], columns=["ts", "open", "high", "low", "close", "volume"])
+
+
+async def refresh_listings():
+    """Ngày niêm yết của mọi hợp đồng USDT vĩnh cửu (kể cả coin sắp bị huỷ niêm yết)."""
+    global listing_dates
+    info = await exchange.fapiPublicGetExchangeInfo()
+    out = {}
+    for s in info.get("symbols", []):
+        if s.get("quoteAsset") != "USDT" or s.get("contractType") != "PERPETUAL":
+            continue
+        ob = int(s.get("onboardDate", 0)) // 1000
+        if ob > 0:
+            out[s["symbol"]] = ob
+    if out:
+        listing_dates = out
+
+
+def check_nl_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
+    """BÁN coin mới niêm yết ở giá ĐÓNG ngày thứ NL_DAY. d1 phải bắt đầu ĐÚNG từ ngày niêm yết
+    (coin mới chưa có lịch sử nào trước đó nên nến đầu tiên chính là ngày lên sàn)."""
+    d = d1.iloc[:-1].reset_index(drop=True)              # bỏ nến ngày đang chạy
+    if not (NL_DAY + 1 <= len(d) <= NL_DAY + 1 + NL_LATE_D):
+        return None                                       # chưa đủ tuổi, hoặc đã quá muộn
+    i = NL_DAY
+    h, l, c = (d[k].astype(float).to_numpy() for k in ("high", "low", "close"))
+    adr = float(np.mean((h[:i + 1] - l[:i + 1]) / np.maximum(c[:i + 1], 1e-12)))
+    entry = float(c[i])
+    risk = NL_SL_ADR * adr * entry
+    if not (entry > 0 and 0.01 <= risk / entry <= 0.60):
+        return None
+    sl, tp = entry + risk, entry - NL_RR * risk
+    entry_time = int(d["ts"].iloc[i]) + TF_SECONDS["1d"]
+    st, exit_time, exit_price = resolve_time(d1, entry_time, sl, tp, False, NL_HOLD_D, TF_SECONDS["1d"])
+    r = None
+    if st in ("win", "loss", "time"):
+        r = round((entry - exit_price) / risk, 3)
+        st = "win" if r > 0 else "loss"
+    return {
+        "id": f"nl1d-{symbol}-{entry_time}-S", "system": "nl1d", "symbol": symbol, "timeframe": "1d",
+        "direction": "bearish", "zone_kind": f"Coin mới niêm yết {NL_DAY} ngày · biên độ ngày {adr*100:.0f}%",
+        "entry": entry, "sl": sl, "tp": tp, "rr": NL_RR, "entry_time": entry_time,
+        "hold_bars": NL_HOLD_D, "detected_at": int(time.time()), "status": st, "r": r,
+        "closed_at": int(time.time()) if st != "open" else None,
+        "exit_time": exit_time, "exit_price": exit_price,
+    }
+
+
+async def newlisting_loop():
+    """Quét riêng: coin mới niêm yết KHÔNG nằm trong danh sách active_symbols cố định."""
+    while True:
+        if strategy_enabled["nl1d"]:
+            try:
+                await refresh_listings()
+                now = time.time()
+                syms = {s["symbol"] for s in list(strategy_signals["nl1d"]) if s["status"] == "open"}
+                fresh = {sym for sym, ob in listing_dates.items()
+                         if NL_DAY + 1 <= (now - ob) / 86400 <= NL_DAY + 1 + NL_LATE_D}
+                syms |= fresh
+                for sym in sorted(syms):
+                    try:
+                        d1 = await fetch_klines_raw(sym, "1d", 200)
+                    except Exception:
+                        log.warning("nl1d: tải nến %s lỗi", sym, exc_info=True)
+                        continue
+                    if d1.empty:
+                        continue
+                    try:
+                        await update_open_signals("nl1d", sym, d1)
+                    except Exception:
+                        log.exception("nl1d: cập nhật lệnh mở %s lỗi", sym)
+                    if sym not in fresh:
+                        continue
+                    try:
+                        sig = check_nl_signal(sym, d1)
+                    except Exception:
+                        log.exception("nl1d: kiểm tín hiệu %s lỗi", sym)
+                        continue
+                    if sig:
+                        await emit_signal("nl1d", sym, sig)
+                    await asyncio.sleep(0.25)
+                if fresh:
+                    log.info("nl1d: %d coin vừa đủ %d ngày tuổi (%s)", len(fresh), NL_DAY,
+                             ", ".join(sorted(fresh)[:6]))
+            except Exception:
+                log.exception("nl1d loop lỗi")
+        await asyncio.sleep(NL_INTERVAL)
+
+
 def check_st_signal(symbol: str, h4: pd.DataFrame, rr: float = ST_RR, system: str = "st4h") -> dict | None:
     """Supertrend (hl2 +- 3 x ATR14 Wilder) vừa đổi hướng ở nến H4 đóng cửa, thuận xu hướng EMA50/EMA200 (H4). SL = ST_SL_ATR x ATR14, TP = ST_RR x rủi ro."""
     d = h4.iloc[:-1].reset_index(drop=True)
@@ -1693,6 +1803,7 @@ async def lifespan(app: FastAPI):
              asyncio.create_task(generic_loop("vc4h", "4h", 300, check_vc_signal, ST_INTERVAL)),
              asyncio.create_task(generic_loop("st15", "4h", 600, partial(check_st_signal, rr=ST15_RR, system="st15"), ST_INTERVAL, pre=refresh_btc_regime)),
              asyncio.create_task(generic_loop("snr1d", "1d", 400, check_snr_signal, SNR_INTERVAL)),
+             asyncio.create_task(newlisting_loop()),
              asyncio.create_task(funding_loop())]
     yield
     for task in tasks:
@@ -1748,7 +1859,7 @@ async def get_zone_alerts():
 async def get_strategy_signals(system: str = Query("pb4h")):
     if system not in strategy_signals:
         raise HTTPException(400, f"system không hợp lệ: {system}")
-    rr = {"pb4h": None if PB_EXIT == "trail" else PB_RR, "bo4h": BO_RR, "st4h": ST_RR, "st15": ST15_RR, "news": None, "vc4h": round(VC_TP_ATR / VC_SL_ATR, 2), "snr1d": SNR_RR}[system]
+    rr = {"pb4h": None if PB_EXIT == "trail" else PB_RR, "bo4h": BO_RR, "st4h": ST_RR, "st15": ST15_RR, "news": None, "vc4h": round(VC_TP_ATR / VC_SL_ATR, 2), "snr1d": SNR_RR, "nl1d": NL_RR}[system]
     return {"enabled": strategy_enabled[system], "rr": rr, "signals": list(strategy_signals[system])}
 
 
