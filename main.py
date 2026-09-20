@@ -197,6 +197,16 @@ PB_SL_ATR = float(os.getenv("PB_SL_ATR", "2.0"))
 # vào ở giá đóng cho -0.611R còn vào bằng limit cho +0.396R (TP 1:1.5, 98 coin/5 năm).
 ST4_ENTRY_ATR = float(os.getenv("ST4_ENTRY_ATR", "0.25"))
 ST4_SL_ATR = float(os.getenv("ST4_SL_ATR", "1.0"))
+# TRẦN GIỮ LỆNH cho ST (như PB_HOLD). Quét toàn bộ cơ chế thoát lệnh 20/09/2026 thì đây là
+# thay đổi DUY NHẤT còn sống trong 6 chiều đã thử (TP, trailing, hoà vốn, thoát-khi-ì, trần, chốt phần).
+# Quét dày (lãi/sụt): không trần 12.45 | 150  12.24 | 180  12.45 | 210  12.65 | 240  12.66 | 270  12.62 |
+#                     300  12.57 | 330  12.42 | 420  12.46 — cả vùng 210-300 đều trên nền, không chỗ nào tụt sâu.
+# R/năm 916 -> 932 (đây là hiệu ứng LỢI NHUẬN, không phải chỉ dịch max drawdown), Sharpe 2.33 -> 2.37,
+# tốt lên ở CẢ HAI nửa (11.98 -> 12.23 và 13.20 -> 13.38) và CẢ HAI rổ coin (8.13 -> 8.80, kiểm định 8.03 -> 8.17).
+# Bootstrap khối 8 tuần x4000: R/năm tốt hơn 95.2% số lần, Sharpe 96.3%.
+# Mức tăng nhỏ (+1.7%) nhưng nhất quán ở mọi thước đo và chỉ tốn một tham số.
+# st15 không bị ảnh hưởng: lệnh st15 đóng sau ~7 nến, đặt trần 60 nến cũng không đổi con số nào.
+ST_HOLD = int(os.getenv("ST_HOLD", "240"))
 BO_ENTRY_ATR = float(os.getenv("BO_ENTRY_ATR", "0"))
 # 0 = đặt limit ngay tại giá đóng nến phá vỡ (không chờ hồi). Đo ở cấp DANH MỤC, lưới 192 cấu hình:
 #   limit 0 ATR -> R/năm 169, sụt -36.7, lãi/sụt 4.59, 6/6 năm | limit 0.5 ATR (cũ) -> 172 / -44.5 / 3.87
@@ -1304,7 +1314,7 @@ def check_st_signal(symbol: str, h4: pd.DataFrame, rr: float = ST_RR, system: st
         sign = 1 if bull else -1
         limit = ci - sign * ST4_ENTRY_ATR * float(atr[i])
         return limit_signal(system, symbol, h4, int(d["ts"].iloc[i]) + TF_SECONDS["4h"], bull, limit, limit - sign * ST4_SL_ATR * float(atr[i]), rr,
-                            "Supertrend flip · limit")
+                            "Supertrend flip · limit", hold=ST_HOLD)
     risk = ST_SL_ATR * float(atr[i])
     if risk / ci < ST_MIN_RISK or risk / ci > ST_MAX_RISK:
         return None
