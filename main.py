@@ -180,6 +180,17 @@ PB_ENTRY_ATR = float(os.getenv("PB_ENTRY_ATR", "1.0"))
 # Cả vùng tstop 24-30 nến × tmfe 1.5-3.0R đều >= 2.68 nên không phải dò tham số. train +0.577 / holdout +0.560.
 PB_TSTOP = int(os.getenv("PB_TSTOP", "24"))
 PB_TMFE = float(os.getenv("PB_TMFE", "2.0"))
+# TRẦN GIỮ LỆNH: lệnh ĐÃ vượt được PB_TMFE (nên thoát-theo-thời-gian ở trên không động tới) mà
+# vẫn chưa chạm TP 1:10 -> đóng ở giá đóng nến thứ PB_HOLD kể từ khi khớp. 0 = không trần.
+# Mọi backtest trước đây ÂM THẦM có trần 300 nến (hằng số HOLD của bộ mô phỏng) còn code live
+# thì KHÔNG có trần nào -> số 11.55 đã công bố mô tả một hệ thống khác cái đang chạy (thật: 9.96).
+# Quét dày ở nền thật (lãi/sụt): 120  11.43 | 180  11.78 | 240  11.71 | 300  11.39 | 420  10.06 | không trần  9.96
+#   -> vùng 120-300 đều cao hẳn, không phải mũi nhọn. Chọn 180 nến H4 = 30 ngày (giữa vùng).
+# Không phải chỉ nhờ MAX DRAWDOWN (một con số duy nhất trong 250 tuần): trung bình 5 đợt sụt lớn nhất
+# -69.1 -> -62.1, 12 tuần xấu nhất (phân vị 5) -20.9 -> -18.5, Sharpe 2.25 -> 2.32.
+# Bootstrap khối 8 tuần x4000: tốt hơn 85.1% số lần (thước đo sụt giảm bền: 93.2%).
+# Áp thêm trần cho ST/BO thì KHÔNG có tác dụng (ST 12.45 -> 12.45, BO 12.45 -> 10.82) -> chỉ PB.
+PB_HOLD = int(os.getenv("PB_HOLD", "180"))
 PB_SL_ATR = float(os.getenv("PB_SL_ATR", "2.0"))
 # Dùng CHUNG cho st4h và st15 (hai hệ thống chỉ khác TP: ST_RR vs ST15_RR).
 # Vào bằng LIMIT tốt hơn 0.25 ATR là điều kiện SỐNG CÒN: cùng tín hiệu, cùng SL 1 ATR,
@@ -211,12 +222,18 @@ VC_VOLX = float(os.getenv("VC_VOLX", "3.0"))
 #   ST: bỏ khi Stochastic đã quá cực đoan theo hướng lệnh -> E +0.56/+0.81R thành +0.74/+1.05R, lãi/sụt giảm 1.91 -> 2.45, tốt hơn ở cả 6 năm
 #   BO: cần ADX >= 19 (có xu hướng thật) -> E +0.46/+0.75R thành +0.58/+0.91R, lãi/sụt giảm 3.74 -> 4.15
 #   VC: không chỉ báo nào cải thiện -> giữ nguyên.
+# CẢ BA con số trên đo trên TỪNG hệ riêng. Đo lại ở DANH MỤC GỘP (20/09/2026) thì Stochastic
+# và ADX đều làm xấu đi; chỉ lọc Bollinger của PB là trụ được (xem BO_MIN_ADX, PB_MIN_BBW_PCTL).
 PB_MIN_BBW_PCTL = float(os.getenv("PB_MIN_BBW_PCTL", "0.33"))
 # Lọc Stochastic: >= 100 là TẮT. Đã đo 20/09/2026 và TẮT lại — nâng kỳ vọng mỗi lệnh của ST
 # (+1.096 -> +1.318R) nhưng cắt 296 lệnh VẪN ĐANG LÃI (+0.422R, dương 5/6 năm), nên ở cấp
 # danh mục gộp làm lãi/sụt tụt 9.19 -> 8.16. Cùng khuôn mẫu với các bộ lọc ST đã loại.
 ST_MAX_STOCH = float(os.getenv("ST_MAX_STOCH", "100"))
-BO_MIN_ADX = float(os.getenv("BO_MIN_ADX", "19"))
+# Lọc ADX: <= 0 là TẮT. Đo lại 20/09/2026 ở cấp DANH MỤC GỘP, cùng cách đã loại lọc Stochastic:
+#   quét ngưỡng ĐƠN ĐIỆU GIẢM — tắt 10.16 | >=12  10.18 | >=15  10.07 | >=19  9.96 | >=22  9.82 | >=25  9.49
+#   phần bị cắt (257 lệnh) VẪN LÃI +0.44R, nên cắt chúng chỉ làm mất lợi nhuận.
+#   Tắt cho R/năm 804 -> 821 và tốt hơn ở CẢ HAI nửa; bootstrap khối 8 tuần: R/năm tốt hơn 95.2% số lần.
+BO_MIN_ADX = float(os.getenv("BO_MIN_ADX", "0"))
 
 
 def bb_width_pctl(c: np.ndarray, i: int, n: int = 20, look: int = 100) -> float:
@@ -288,16 +305,18 @@ strategy_enabled: dict = {**{k: True for k in STRATEGY_SYSTEMS}, "zone": True, "
 # BO H4 không dùng lọc NY: nghiên cứu bối cảnh cho thấy lọc giờ làm BO xấu đi (lãi/sụt giảm 1.19 -> 0.68); BO dùng lọc sức mạnh tương đối thay thế.
 NY_SYSTEMS = ("pb4h", "st4h", "st15")
 # ─── TRỌNG SỐ RỦI RO theo hệ thống (nhân vào cỡ lệnh, KHÔNG chặn tín hiệu) ───
-# PB là hệ thống bị phân bổ quá nặng: nó đóng góp sụt giảm lớn nhất trong 6 hệ thống
-# (-127.6R so với -16.6R của VC) trong khi lợi nhuận chỉ đứng thứ hai.
-# Quét trọng số PB từ 0 đến 1.5 (bước 0.05), kế toán theo tuần ĐÓNG lệnh:
-#   đường cong MƯỢT (chỉ 1 lần đổi chiều) -> hiệu ứng thật, không phải dò tham số
-#   wPB=0.50 tối đa hoá GIÁ TRỊ NHỎ NHẤT của hai nửa thời gian (không tối ưu vào nửa nào):
-#      lãi/sụt 9.25 -> 11.55 (+25%) | R/năm -13% | sụt giảm -30% | Sharpe 2.34 -> 2.39
-#      nửa đầu 11.25 -> 11.70, nửa sau 9.06 -> 11.75 (tốt lên ở CẢ HAI nửa)
-# PB là hệ thống DUY NHẤT có tính chất này: giảm BO/ST/ST15/VC đều làm danh mục TỆ ĐI.
-# Chỉnh nhiều hệ cùng lúc thì khớp nhiễu (nửa đầu 15.06 nhưng nửa sau chỉ 5.55) -> chỉ chỉnh PB.
-SYSTEM_RISK = {"pb4h": float(os.getenv("PB_RISK_W", "0.5"))}
+# Rỗng = mọi hệ thống cùng cỡ lệnh. Trước đây PB bị hạ còn 0.5 vì nó gây sụt giảm lớn nhất
+# (-127.6R). Nhưng NGUYÊN NHÂN của cái sụt giảm đó là lệnh PB chạy quá dài rồi trả hết lãi —
+# đúng thứ mà PB_HOLD vừa chữa tận gốc. Chữa xong thì miếng dán không còn cần:
+#   quét trọng số (đã có PB_HOLD): 0.5  11.78 | 0.7  12.14 | 1.0  12.45 | 1.2  12.23 | 1.5  11.62
+#   -> đỉnh RỘNG và nằm ngay ở mức ĐỀU (1.0), tức không phải tham số dò được.
+# Tổng ba thay đổi (bỏ ADX + PB_HOLD 180 + trọng số về đều) so với NỀN THẬT của code live:
+#   R/năm 804 -> 916 | sụt -80.8 -> -73.6 | lãi/sụt 9.96 -> 12.45 | Sharpe 2.25 -> 2.33
+#   nửa đầu 11.29 -> 11.98 và nửa sau 10.18 -> 13.20 (tốt lên ở CẢ HAI nửa)
+#   rổ coin huấn luyện 8.08 -> 8.13, rổ KIỂM ĐỊNH 8.03 (nền 7.73) -> đúng ở cả hai rổ
+#   bootstrap khối 8 tuần x4000: R/năm tốt hơn 99.8% số lần, sụt giảm bền 88.8%
+# Lọc Bollinger của PB (PB_MIN_BBW_PCTL) thì GIỮ: bỏ nó ở cấu hình mới làm lãi/sụt 12.45 -> 9.82.
+SYSTEM_RISK: dict[str, float] = {}
 # Các hệ thống dùng CHUNG một tín hiệu gốc -> không được tính là "đồng thuận" của nhau.
 # st4h và st15 đều là Supertrend flip H4, chỉ khác TP (1:8 vs 1:1.5).
 SAME_SIGNAL = {"st4h": {"st4h", "st15"}, "st15": {"st4h", "st15"}}
@@ -952,7 +971,7 @@ def check_pb_signal(symbol: str, h4: pd.DataFrame) -> dict | None:
         sign = 1 if bull else -1
         limit = ci - sign * PB_ENTRY_ATR * a
         return limit_signal("pb4h", symbol, h4, entry_time, bull, limit, limit - sign * PB_SL_ATR * a, PB_RR, "Pullback EMA20 · limit",
-                            PB_TSTOP, PB_TMFE)
+                            PB_TSTOP, PB_TMFE, hold=PB_HOLD)
     sid = f"pb4h-{symbol}-{entry_time}-{'L' if bull else 'S'}"
     if PB_EXIT == "tp":
         tp = ci + PB_RR * risk if bull else ci - PB_RR * risk
@@ -1021,7 +1040,7 @@ def check_bo_signal(symbol: str, h4: pd.DataFrame, rr: float = BO_RR, system: st
             return None
         if b < 180:
             return None
-        if adx14(h, l, c, b) < BO_MIN_ADX:
+        if BO_MIN_ADX > 0 and adx14(h, l, c, b) < BO_MIN_ADX:
             return None
         btc_r30 = btc_h4_r30.get(int(d["ts"].iloc[b]))
         if btc_r30 is None or sign * ((c[b] / c[b - 180] - 1) - btc_r30) > BO_MAX_RS:
