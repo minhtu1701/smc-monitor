@@ -124,6 +124,14 @@ SNR_RR = float(os.getenv("SNR_RR", "8"))
 SNR_EXP_D = int(os.getenv("SNR_EXP_D", "20"))
 SNR_HOLD_D = int(os.getenv("SNR_HOLD_D", "14"))
 SNR_MA = int(os.getenv("SNR_MA", "50"))
+# Bỏ qua khi thị trường đang NÉN: ATR%/trung bình ATR% 180 nến < ngưỡng -> mức bị phá thường là phá vờ.
+# Đo ở cấp DANH MỤC GỘP: không lọc -> lãi/sụt 8.86, Sharpe 2.21, SNR WR 33.9%
+#                        >= 0.85  -> lãi/sụt 10.34, Sharpe 2.27, SNR WR 38.0% (giữ 61% lệnh, R/năm -5%, sụt -19%)
+# Vùng 0.75-1.10 đều cho 9.97-11.20 nên không phải dò tham số.
+SNR_MIN_ATR_RATIO = float(os.getenv("SNR_MIN_ATR_RATIO", "0.85"))
+# Xu hướng khung NGÀY: chỉ vào khi EMA nhanh/chậm của chính khung 1d cùng chiều lệnh.
+SNR_D1_FAST = int(os.getenv("SNR_D1_FAST", "20"))
+SNR_D1_SLOW = int(os.getenv("SNR_D1_SLOW", "50"))
 SNR_INTERVAL = int(os.getenv("SNR_INTERVAL", "900"))
 # ── Lọc funding ngược đám đông ──
 # Chỉ vào lệnh khi funding đang nghiêng về phía NGƯỢC với lệnh (mua khi funding âm, bán khi funding dương):
@@ -1033,6 +1041,10 @@ def check_snr_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
     tr = np.maximum(h - l, np.maximum(abs(h - pc), abs(l - pc)))
     atr = pd.Series(tr).rolling(14).mean().to_numpy()
     ma = pd.Series(c).rolling(SNR_MA).mean().to_numpy()
+    atrp = atr / c
+    atr_ratio = atrp / pd.Series(atrp).rolling(180, min_periods=60).mean().to_numpy()
+    d1_fast = pd.Series(c).ewm(span=SNR_D1_FAST, adjust=False).mean().to_numpy()
+    d1_slow = pd.Series(c).ewm(span=SNR_D1_SLOW, adjust=False).mean().to_numpy()
     last = n - 1                                      # nến ngày vừa đóng
     if not np.isfinite(atr[last]) or atr[last] <= 0 or not np.isfinite(ma[last]):
         return None
@@ -1066,6 +1078,10 @@ def check_snr_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
                 side = -kind
                 if side != (1 if c[k] > ma[k] else -1):
                     break                              # nến phá vỡ phải đóng cùng phía MA50 với chiều lệnh
+                if atr_ratio[k] < SNR_MIN_ATR_RATIO:
+                    break                              # thị trường đang nén -> bỏ qua
+                if side != (1 if d1_fast[k] > d1_slow[k] else -1):
+                    break                              # ngược xu hướng khung ngày -> bỏ qua
                 bull = side > 0
                 sl = px - side * SNR_SLK * atr[k]
                 return limit_signal("snr1d", symbol, d1, int(d["ts"].iloc[last]) + TF_SECONDS["1d"], bull, float(px), float(sl), SNR_RR,
