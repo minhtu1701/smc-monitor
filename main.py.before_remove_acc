@@ -69,6 +69,14 @@ CONCURRENCY = int(os.getenv("CONCURRENCY", "8"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Accumulation screener — tìm coin giá thấp đang "siết chặt" biến động (candidate tích lũy)
+SCREENER_MAX_PRICE = float(os.getenv("SCREENER_MAX_PRICE", "0.1"))
+SCREENER_MIN_QUOTE_VOLUME = float(os.getenv("SCREENER_MIN_QUOTE_VOLUME", "1000000"))
+SCREENER_INTERVAL = int(os.getenv("SCREENER_INTERVAL", "3600"))  # 1 giờ — tín hiệu intraday cần quét thường xuyên
+SCREENER_TOP_N = int(os.getenv("SCREENER_TOP_N", "25"))
+SCREENER_INTRADAY_TIMEFRAME = os.getenv("SCREENER_INTRADAY_TIMEFRAME", "1h")
+SCREENER_INTRADAY_LOOKBACK = int(os.getenv("SCREENER_INTRADAY_LOOKBACK", "48"))  # số nến 1h nhìn lại (~2 ngày)
+SCREENER_DAILY_WEIGHT = float(os.getenv("SCREENER_DAILY_WEIGHT", "0.55"))
 
 # Giới hạn rủi ro dùng chung cho NR7 H4 (SL = đầu kia nến NR7).
 
@@ -109,20 +117,13 @@ LIMIT_BARS = int(os.getenv("LIMIT_BARS", "6"))
 # Chỉ đặt khi nến phá vỡ đóng cùng phía MA50 với chiều lệnh. SL = mức -/+ SNR_SLK x ATR (ATR lúc ĐẶT lệnh), TP = SNR_RR x rủi ro.
 # Backtest 98 coin 5 năm (train 40 / holdout 58): E +0.264R / +0.342R, WR 29.4%, t tuần +2.62, 6/6 năm dương,
 # 18/18 cấu hình tham số dương ở cả hai tập. Chỉ trùng 12% lệnh với PB/BO/ST/VC.
-# TP 1:8 + giữ tối đa 90 ngày (tối ưu ở cấp DANH MỤC, lưới hold 30/60/90/120 × TP 5/8/10/12/15R):
-#   giữ 30 + TP 5R -> R/năm 194, sụt -162, lãi/sụt 1.19 (cấu hình cũ)
-#   giữ 30 + TP 8R -> 216 / -163 / 1.33 | giữ 45 -> 220 / -158 / 1.39 | giữ 60 -> 240 / -135 / 1.78 | giữ 90 -> 244 / -120 / 2.03
-#   TP 8R là đỉnh ở CẢ BỐN mức giữ lệnh -> đỉnh nội tại, không phải mép lưới.
-#   Trần 14 ngày (yêu cầu của user: giữ lệnh <= 1-2 tuần). Chi phí chỉ 17%: trần 60 -> R/năm 240, lãi/sụt 1.78;
-#   trần 14 -> R/năm 200, lãi/sụt 1.34, vẫn 6/6 năm dương. Giữ lệnh thực tế: trung vị 7 ngày, TB 7.8, 90% trong 14.
-#   (PB thì NGƯỢC LẠI: cắt còn 14 ngày làm lãi/sụt rơi 2.26 -> 0.93, mất 59% — PB cần đuôi dài mới có lãi, để nguyên.)
 SNR_L = int(os.getenv("SNR_L", "2"))
 SNR_MOVE = float(os.getenv("SNR_MOVE", "2.0"))
 SNR_BREAK_ATR = float(os.getenv("SNR_BREAK_ATR", "0.2"))
 SNR_SLK = float(os.getenv("SNR_SLK", "1.0"))
-SNR_RR = float(os.getenv("SNR_RR", "8"))
+SNR_RR = float(os.getenv("SNR_RR", "5"))
 SNR_EXP_D = int(os.getenv("SNR_EXP_D", "20"))
-SNR_HOLD_D = int(os.getenv("SNR_HOLD_D", "14"))
+SNR_HOLD_D = int(os.getenv("SNR_HOLD_D", "30"))
 SNR_MA = int(os.getenv("SNR_MA", "50"))
 SNR_INTERVAL = int(os.getenv("SNR_INTERVAL", "900"))
 # ── Lọc funding ngược đám đông ──
@@ -143,27 +144,17 @@ FUND_INTERVAL = int(os.getenv("FUND_INTERVAL", "300"))
 #   ST: giữ 60% lệnh, E +0.701R -> +1.088R (train +0.960 vs -0.103, holdout +1.187 vs +0.286). t +6.24.
 # Bền với mọi cửa sổ 10/20/30/45/60 ngày (t từ 2.7 đến 7.4) nên không phải dò tham số.
 # KHÔNG áp dụng cho PB (t +0.58), VC (chỉ N=30 dương, các cửa sổ khác âm -> nhiễu) và SNR (t -0.13).
-BTC_TREND_SYSTEMS = tuple(x.strip() for x in os.getenv("BTC_TREND_SYSTEMS", "bo4h,st4h,st15").split(",") if x.strip())
+BTC_TREND_SYSTEMS = tuple(x.strip() for x in os.getenv("BTC_TREND_SYSTEMS", "bo4h,bo15,st4h,st15").split(",") if x.strip())
 BTC_TREND_DAYS = int(os.getenv("BTC_TREND_DAYS", "30"))
 # Dấu hiệu độ tin cậy (không chặn lệnh): hệ thống khác đã báo cùng coin, cùng chiều trong CONFLUENCE_H giờ qua.
 # Backtest: PB +0.695R -> +1.963R, ST +0.701R -> +1.677R ở nhóm có đồng thuận. Nhưng nhóm KHÔNG có đồng thuận
 # vẫn lãi +0.55R và chiếm 90% lợi nhuận, nên chỉ hiển thị để cân nhắc vào nặng tay hơn, tuyệt đối không lọc bỏ.
 CONFLUENCE_H = int(os.getenv("CONFLUENCE_H", "48"))
 PB_ENTRY_ATR = float(os.getenv("PB_ENTRY_ATR", "1.0"))
-# Thoát theo thời gian: sau PB_TSTOP nến H4 kể từ khi khớp mà chưa lời được PB_TMFE R -> đóng ở giá đóng nến.
-# Đo ở cấp DANH MỤC: không có -> R/năm 341, sụt -150.7, lãi/sụt 2.26, Sharpe 1.28, giữ TB 13.1 ngày
-#                    24 nến/2R -> R/năm 264, sụt  -88.2, lãi/sụt 2.99, Sharpe 1.40, giữ TB  7.8 ngày
-# Cả vùng tstop 24-30 nến × tmfe 1.5-3.0R đều >= 2.68 nên không phải dò tham số. train +0.577 / holdout +0.560.
-PB_TSTOP = int(os.getenv("PB_TSTOP", "24"))
-PB_TMFE = float(os.getenv("PB_TMFE", "2.0"))
 PB_SL_ATR = float(os.getenv("PB_SL_ATR", "2.0"))
 ST4_ENTRY_ATR = float(os.getenv("ST4_ENTRY_ATR", "0.25"))
 ST4_SL_ATR = float(os.getenv("ST4_SL_ATR", "1.0"))
-BO_ENTRY_ATR = float(os.getenv("BO_ENTRY_ATR", "0"))
-# 0 = đặt limit ngay tại giá đóng nến phá vỡ (không chờ hồi). Đo ở cấp DANH MỤC, lưới 192 cấu hình:
-#   limit 0 ATR -> R/năm 169, sụt -36.7, lãi/sụt 4.59, 6/6 năm | limit 0.5 ATR (cũ) -> 172 / -44.5 / 3.87
-#   Bền với trượt giá: +0.05% -> 4.44 | +0.10% -> 4.29 | +0.20% -> 4.01, vẫn hơn cấu hình cũ.
-#   Lý do: cú phá vỡ nào hồi ngay 0.5 ATR thường là cú phá vỡ yếu — chờ hồi được giá tốt hơn nhưng vào toàn setup tệ hơn.
+BO_ENTRY_ATR = float(os.getenv("BO_ENTRY_ATR", "0.5"))
 BO_SL_BARS = int(os.getenv("BO_SL_BARS", "10"))
 # Nghiên cứu bối cảnh (98 coin, train/holdout): lệnh thắng nhiều hơn khi coin CHƯA vượt trội BTC theo hướng lệnh trong 30 ngày
 # (mua coin tụt lại BTC / bán coin mạnh hơn BTC). BO: E +0.39/+0.34R -> +0.57/+0.82R, lãi/sụt giảm 1.19 -> 1.78.
@@ -177,7 +168,7 @@ BO_TSTOP = int(os.getenv("BO_TSTOP", "12"))
 # win 67%, +0.33R/lệnh (train +0.34 / holdout +0.32, coin lớn +0.28 / alt +0.34, dương 6/6 năm, t=3.7); bán ngẫu nhiên cùng thoát chỉ +0.02R.
 VC_TP_ATR = float(os.getenv("VC_TP_ATR", "1.5"))
 VC_SL_ATR = float(os.getenv("VC_SL_ATR", "1.5"))
-VC_HOLD = int(os.getenv("VC_HOLD", "30"))   # 30 nến H4 = 5 ngày. Đo ở cấp danh mục: giữ 18 -> lãi/sụt 6.24, giữ 30 -> 7.04, giữ 48 -> 7.08 (chọn 30, đã vào vùng bằng phẳng)
+VC_HOLD = int(os.getenv("VC_HOLD", "18"))
 VC_VOLX = float(os.getenv("VC_VOLX", "3.0"))
 # Lọc chỉ báo thêm (thử RSI/BB/MACD/Stoch/ADX trên chính các lệnh của hệ thống, train 40 coin + holdout 58 coin):
 #   PB: bỏ khi dải Bollinger quá hẹp (độ rộng < phân vị 33 của 100 nến) -> E +0.69/+0.70R thành +1.07/+1.07R, lãi/sụt giảm 1.84 -> 2.38
@@ -226,6 +217,7 @@ ST_MAX_RISK = float(os.getenv("ST_MAX_RISK", "0.12"))
 BO_RR = float(os.getenv("BO_RR", "8"))
 # Bản RR thấp của Breakout H4 / Supertrend H4 (cùng tín hiệu, TP 1:1.5): thắng ~45% (hoà vốn 40%), kỳ vọng ~ +0.13R/lệnh ở 58 coin holdout
 # (Breakout +0.135R, Supertrend +0.123R) — đường vốn mượt hơn nhưng kỳ vọng mỗi lệnh chỉ khoảng một nửa bản RR cao.
+BO15_RR = float(os.getenv("BO15_RR", "1.5"))
 ST15_RR = float(os.getenv("ST15_RR", "1.5"))
 BO_INTERVAL = int(os.getenv("BO_INTERVAL", "300"))
 BO_BOX = int(os.getenv("BO_BOX", "20"))
@@ -246,17 +238,22 @@ log = logging.getLogger("smc")
 
 # ─────────────────────────── State ───────────────────────────
 exchange: ccxt.binanceusdm | None = None
-kline_exchange: ccxt.binanceusdm | None = None  # instance riêng, tránh bị nghẽn rate-limit chung với scanner
+kline_exchange: ccxt.binanceusdm | None = None  # instance riêng, tránh bị nghẽn rate-limit chung với scanner/screener
 http: httpx.AsyncClient | None = None
 active_symbols: list[str] = list(SYMBOLS)
 history: deque = deque(maxlen=200)   # tín hiệu gần nhất (mới nhất đứng đầu)
 seen: set[str] = set()               # chống gửi trùng
 status = {"last_scan": None, "duration": None, "scans": 0}
-STRATEGY_SYSTEMS = ("pb4h", "bo4h", "st4h", "st15", "news", "vc4h", "snr1d")
+screener_state: dict = {
+    "updated_at": None, "scanned": 0, "results": [],
+    "max_price": SCREENER_MAX_PRICE, "interval_s": SCREENER_INTERVAL,
+    "intraday_lookback_h": SCREENER_INTRADAY_LOOKBACK,
+}
+STRATEGY_SYSTEMS = ("pb4h", "bo4h", "st4h", "bo15", "st15", "news", "vc4h", "snr1d")
 strategy_enabled: dict = {**{k: True for k in STRATEGY_SYSTEMS}, "zone": True, "ny": True}  # "zone" = cảnh báo vùng HTF (không phải chiến lược vào lệnh)
 # "ny" = chỉ nhận tín hiệu khi nến H4 đóng lúc 16:00/20:00 UTC (phiên New York). Backtest 98 coin: PB +0.22R -> +0.46R, BO +0.25R -> +0.35R, ST +0.24R -> +0.34R.
 # BO H4 không dùng lọc NY: nghiên cứu bối cảnh cho thấy lọc giờ làm BO xấu đi (lãi/sụt giảm 1.19 -> 0.68); BO dùng lọc sức mạnh tương đối thay thế.
-NY_SYSTEMS = ("pb4h", "st4h", "st15")
+NY_SYSTEMS = ("pb4h", "st4h", "bo15", "st15")
 NY_HOURS = (16, 20)
 strategy_signals: dict[str, deque] = {k: deque(maxlen=100) for k in STRATEGY_SYSTEMS}
 strategy_seen: set[str] = set()
@@ -436,7 +433,138 @@ def build_signal(symbol: str, timeframe: str, choch: dict, bos: dict, df: pd.Dat
     }
 
 
-# ─────────────────────────── Volwatch: xác suất biến động mạnh 24h ───────────────────────────
+# ─────────────────────────── Accumulation screener ───────────────────────────
+def _zscore_slope(series: pd.Series) -> float:
+    """Độ dốc (xu hướng) của chuỗi sau khi chuẩn hoá z-score, để so sánh giữa các đại lượng khác đơn vị (giá vs OBV)."""
+    y = series.to_numpy(dtype=float)
+    std = y.std()
+    if len(y) < 3 or std == 0:
+        return 0.0
+    y = (y - y.mean()) / std
+    return float(np.polyfit(np.arange(len(y)), y, 1)[0])
+
+
+def squeeze_metrics(df: pd.DataFrame) -> dict | None:
+    """Đánh giá mức độ 'siết chặt' biến động (dấu hiệu tích lũy) từ nến ngày đã đóng.
+    Điểm cao = biên độ/ATR đang thấp hơn hẳn so với chính lịch sử của nó, volume cạn dần,
+    và OBV vẫn tăng trong lúc giá đi ngang (dòng tiền âm thầm gom hàng)."""
+    d = df.iloc[:-1].reset_index(drop=True)  # bỏ nến ngày đang chạy
+    if len(d) < 120:
+        return None
+    close, high, low, vol = d["close"], d["high"], d["low"], d["volume"]
+
+    sma20, std20 = close.rolling(20).mean(), close.rolling(20).std()
+    bb_width = (4 * std20) / sma20
+
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    atr_pct = tr.rolling(14).mean() / close
+
+    lookback = min(180, len(d))
+    bb_pctile = bb_width.tail(lookback).rank(pct=True).iloc[-1]
+    atr_pctile = atr_pct.tail(lookback).rank(pct=True).iloc[-1]
+    if pd.isna(bb_pctile) or pd.isna(atr_pctile):
+        return None
+
+    vol_base = vol.tail(30).mean()
+    vol_ratio = (vol.tail(7).mean() / vol_base) if vol_base else 1.0
+
+    obv = (np.sign(close.diff().fillna(0)) * vol).cumsum()
+    window = min(30, len(d) - 1)
+    obv_div = max(0.0, min(1.0, (_zscore_slope(obv.tail(window)) - _zscore_slope(close.tail(window))) / 2 + 0.5))
+
+    score = ((1 - bb_pctile) * 35 + (1 - atr_pctile) * 25
+             + max(0.0, 1 - min(vol_ratio, 1.5)) * 20 + obv_div * 20)
+
+    tight = close.tail(lookback)
+    band = tight.mean() * 0.15
+    days_in_range = int((tight.sub(tight.mean()).abs() <= band).sum()) if band else 0
+
+    return {
+        "bb_pctile": round(float(bb_pctile) * 100, 1),
+        "atr_pctile": round(float(atr_pctile) * 100, 1),
+        "vol_ratio": round(float(vol_ratio), 2),
+        "obv_div": round(float(obv_div) * 100, 1),
+        "days_in_range": days_in_range,
+        "daily_score": round(float(score), 1),
+    }
+
+
+def intraday_signal(df: pd.DataFrame) -> dict | None:
+    """Tín hiệu gom hàng NGẮN HẠN (vài giờ - vài ngày, nến 1h): giá đi ngang trong khi
+    volume + OBV bắt đầu tăng lên — dấu hiệu whale hấp thụ nguồn cung trước khi đẩy giá."""
+    d = df.iloc[:-1].reset_index(drop=True)  # bỏ nến giờ đang chạy
+    window = min(SCREENER_INTRADAY_LOOKBACK, len(d) - 1)
+    if window < 24:
+        return None
+    close, vol = d["close"].tail(window + 1), d["volume"].tail(window + 1)
+
+    price_range_pct = (close.max() - close.min()) / close.mean()
+    flatness = max(0.0, min(1.0, 1 - price_range_pct / 0.12))  # càng phẳng (<12%) điểm càng cao
+
+    vol_base = vol.mean()
+    vol_pickup = (vol.tail(6).mean() / vol_base) if vol_base else 1.0
+    pickup_score = max(0.0, min(1.0, (vol_pickup - 1) / 1.5))
+
+    obv = (np.sign(close.diff().fillna(0)) * vol).cumsum()
+    obv_div = max(0.0, min(1.0, (_zscore_slope(obv) - _zscore_slope(close)) / 2 + 0.5))
+
+    score = flatness * 40 + pickup_score * 30 + obv_div * 30
+    return {
+        "intraday_flat_pct": round(float(price_range_pct) * 100, 1),
+        "intraday_vol_pickup": round(float(vol_pickup), 2),
+        "intraday_obv_div": round(float(obv_div) * 100, 1),
+        "intraday_score": round(float(score), 1),
+    }
+
+
+async def screener_scan():
+    try:
+        tickers = await exchange.fetch_tickers()
+    except Exception as e:
+        log.warning("Screener: không lấy được tickers (%s)", e)
+        return
+
+    candidates = []
+    for msym, market in exchange.markets.items():
+        if not market.get("swap") or market.get("quote") != "USDT" or not market.get("active"):
+            continue
+        t = tickers.get(msym)
+        price = (t or {}).get("last")
+        qvol = (t or {}).get("quoteVolume") or 0
+        if not price or price <= 0 or price >= SCREENER_MAX_PRICE or qvol < SCREENER_MIN_QUOTE_VOLUME:
+            continue
+        candidates.append((market["base"] + market["quote"], price, qvol))
+
+    sem = asyncio.Semaphore(CONCURRENCY)
+
+    async def one(sym: str, price: float, qvol: float) -> dict | None:
+        async with sem:
+            try:
+                daily_df, hourly_df = await asyncio.gather(
+                    fetch_ohlc(sym, "1d", 220),
+                    fetch_ohlc(sym, SCREENER_INTRADAY_TIMEFRAME, SCREENER_INTRADAY_LOOKBACK + 5),
+                )
+            except Exception:
+                return None
+        daily_m = await asyncio.to_thread(squeeze_metrics, daily_df)
+        if not daily_m:
+            return None
+        intraday_m = await asyncio.to_thread(intraday_signal, hourly_df)
+        intraday_score = intraday_m["intraday_score"] if intraday_m else 0.0
+        score = round(daily_m["daily_score"] * SCREENER_DAILY_WEIGHT + intraday_score * (1 - SCREENER_DAILY_WEIGHT), 1)
+        return {
+            "symbol": sym, "price": price, "quote_volume_24h": round(qvol), "score": score,
+            **daily_m, **(intraday_m or {}),
+        }
+
+    results = await asyncio.gather(*(one(s, p, v) for s, p, v in candidates), return_exceptions=True)
+    rows = sorted((r for r in results if isinstance(r, dict)), key=lambda r: r["score"], reverse=True)
+    screener_state.update(updated_at=int(time.time()), scanned=len(candidates), results=rows[:SCREENER_TOP_N])
+    log.info("Screener: %d/%d coin < $%.4g đủ điều kiện quét, top score %.1f",
+              len(rows), len(candidates), SCREENER_MAX_PRICE, rows[0]["score"] if rows else 0)
+
+
 volwatch_state: dict = {"updated_at": None, "scanned": 0, "results": [], "interval_s": 3600}
 volwatch_exchange: "ccxt.binanceusdm | None" = None
 
@@ -615,6 +743,19 @@ async def news_loop():
         await asyncio.sleep(60)
 
 
+async def screener_loop():
+    while True:
+        t0 = time.time()
+        try:
+            await screener_scan()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Screener loop lỗi")
+        await asyncio.sleep(max(30.0, SCREENER_INTERVAL - (time.time() - t0)))
+
+
+# ─────────────────────────── Telegram ───────────────────────────
 def fmt_price(x: float) -> str:
     return f"{x:,.2f}" if x >= 100 else f"{x:.6g}"
 
@@ -880,8 +1021,7 @@ def check_pb_signal(symbol: str, h4: pd.DataFrame) -> dict | None:
         a = float(wilder_atr(hi, lo, cl)[i])
         sign = 1 if bull else -1
         limit = ci - sign * PB_ENTRY_ATR * a
-        return limit_signal("pb4h", symbol, h4, entry_time, bull, limit, limit - sign * PB_SL_ATR * a, PB_RR, "Pullback EMA20 · limit",
-                            PB_TSTOP, PB_TMFE)
+        return limit_signal("pb4h", symbol, h4, entry_time, bull, limit, limit - sign * PB_SL_ATR * a, PB_RR, "Pullback EMA20 · limit")
     sid = f"pb4h-{symbol}-{entry_time}-{'L' if bull else 'S'}"
     if PB_EXIT == "tp":
         tp = ci + PB_RR * risk if bull else ci - PB_RR * risk
@@ -945,7 +1085,7 @@ def check_bo_signal(symbol: str, h4: pd.DataFrame, rr: float = BO_RR, system: st
         return None
     if btc_h4_regime.get(int(d["ts"].iloc[b])) != sign:
         return None
-    if system == "bo4h" and BO_ENTRY_ATR >= 0:   # ek = 0 -> limit đặt ĐÚNG giá đóng (vẫn qua nhánh limit để giữ đủ bộ lọc + SL cực trị 10 nến + thoát theo thời gian)
+    if system == "bo4h" and BO_ENTRY_ATR > 0:
         if BO_LONG_ONLY and not bull:
             return None
         if b < 180:
@@ -1622,13 +1762,14 @@ async def lifespan(app: FastAPI):
 
     log.info("Theo dõi %d symbols × %s | Telegram: %s", len(active_symbols), TIMEFRAMES,
              "ON" if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID else "OFF")
-    tasks = [asyncio.create_task(scanner_loop()),
+    tasks = [asyncio.create_task(scanner_loop()), asyncio.create_task(screener_loop()),
              asyncio.create_task(kline_relay_loop()), asyncio.create_task(volwatch_loop()), asyncio.create_task(news_loop()), asyncio.create_task(feed_loop()),
              asyncio.create_task(zone_loop()),
              asyncio.create_task(generic_loop("pb4h", "4h", 600, check_pb_signal, PB_INTERVAL)),
              asyncio.create_task(generic_loop("bo4h", "4h", 600, check_bo_signal, BO_INTERVAL, pre=refresh_btc_regime)),
              asyncio.create_task(generic_loop("st4h", "4h", 600, check_st_signal, ST_INTERVAL, pre=refresh_btc_regime)),
              asyncio.create_task(generic_loop("vc4h", "4h", 300, check_vc_signal, ST_INTERVAL)),
+             asyncio.create_task(generic_loop("bo15", "4h", 600, partial(check_bo_signal, rr=BO15_RR, system="bo15"), BO_INTERVAL, pre=refresh_btc_regime)),
              asyncio.create_task(generic_loop("st15", "4h", 600, partial(check_st_signal, rr=ST15_RR, system="st15"), ST_INTERVAL, pre=refresh_btc_regime)),
              asyncio.create_task(generic_loop("snr1d", "1d", 400, check_snr_signal, SNR_INTERVAL)),
              asyncio.create_task(funding_loop())]
@@ -1677,6 +1818,11 @@ async def get_volwatch():
     return volwatch_state
 
 
+@app.get("/api/screener")
+async def get_screener():
+    return screener_state
+
+
 @app.get("/api/zone-alerts")
 async def get_zone_alerts():
     return {"enabled": strategy_enabled.get("zone", True), "timeframes": ZONE_TFS, "alerts": list(zone_alerts)}
@@ -1686,7 +1832,7 @@ async def get_zone_alerts():
 async def get_strategy_signals(system: str = Query("pb4h")):
     if system not in strategy_signals:
         raise HTTPException(400, f"system không hợp lệ: {system}")
-    rr = {"pb4h": None if PB_EXIT == "trail" else PB_RR, "bo4h": BO_RR, "st4h": ST_RR, "st15": ST15_RR, "news": None, "vc4h": round(VC_TP_ATR / VC_SL_ATR, 2), "snr1d": SNR_RR}[system]
+    rr = {"pb4h": None if PB_EXIT == "trail" else PB_RR, "bo4h": BO_RR, "st4h": ST_RR, "bo15": BO15_RR, "st15": ST15_RR, "news": None, "vc4h": round(VC_TP_ATR / VC_SL_ATR, 2), "snr1d": SNR_RR}[system]
     return {"enabled": strategy_enabled[system], "rr": rr, "signals": list(strategy_signals[system])}
 
 

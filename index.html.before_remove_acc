@@ -77,6 +77,11 @@
               :class="strategy.st4h ? 'text-gold' : 'text-muted'">
         {{ strategy.st4h ? '📈 ST H4 on' : '📈 ST H4 off' }}
       </button>
+      <button @click="toggleStrategy('bo15')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.bo15 ? 'text-gold' : 'text-muted'">
+        {{ strategy.bo15 ? '💥 BO 1.5 on' : '💥 BO 1.5 off' }}
+      </button>
       <button @click="toggleStrategy('st15')"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
               :class="strategy.st15 ? 'text-gold' : 'text-muted'">
@@ -250,13 +255,27 @@
           <span class="text-xs text-muted">{{ signals.length }}</span>
         </div>
 
-        <div v-if="rightTab === 'screener'" class="mt-2 flex items-start justify-between gap-2 text-xs text-muted">
+        <div v-else-if="rightTab === 'screener'" class="mt-2 flex gap-1 text-xs">
+          <button v-for="m in [['acc', 'Tích lũy (giá rẻ)'], ['vol', 'Sắp biến động mạnh']]" :key="m[0]" @click="screenerMode = m[0]; if (m[0] === 'vol') loadVolwatch()"
+                  class="px-2 py-1 rounded border transition" :class="screenerMode === m[0] ? 'border-gold text-gold' : 'border-line text-muted hover:text-gray-200'">{{ m[1] }}</button>
+        </div>
+        <div v-if="rightTab === 'screener' && screenerMode === 'vol'" class="mt-2 flex items-start justify-between gap-2 text-xs text-muted">
           <span>
             Xác suất giá CHẠM +15% / -15% trong 24h tới (hai mô hình riêng, đã hiệu chỉnh ngoài mẫu; nền: {{ volwatch.base_up ?? 5.7 }}% / {{ volwatch.base_dn ?? 3.3 }}%).
             Tin được để đánh giá RỦI RO; backtest giao dịch theo chiều nghiêng vẫn lỗ → không phải tín hiệu vào lệnh.
             <br />{{ volwatch.updated_at ? `Cập nhật ${timeAgo(volwatch.updated_at)} · chấm ${volwatch.scanned} hợp đồng · quét lại mỗi giờ` : 'Đang chờ lượt quét đầu (~3 phút sau khi server khởi động)' }}
           </span>
           <button @click="loadVolwatch" class="shrink-0 px-2 py-1 rounded border border-line hover:border-muted hover:text-gray-200 transition">↻</button>
+        </div>
+        <div v-if="rightTab === 'screener' && screenerMode === 'acc'" class="mt-2 flex items-center justify-between text-xs text-muted">
+          <span>
+            Coin &lt; ${{ screener.max_price ?? '0.1' }} đang tích lũy (siết BB/ATR + volume cạn + OBV tăng)
+            <br />{{ screener.updated_at ? `Cập nhật ${timeAgo(screener.updated_at)} · quét ${screener.scanned} coin` : '' }}
+          </span>
+          <button @click="loadScreener" class="shrink-0 px-2 py-1 rounded border border-line hover:border-muted hover:text-gray-200 transition"
+                  :disabled="screenerLoading">
+            {{ screenerLoading ? '…' : '↻' }}
+          </button>
         </div>
 
         <div v-else-if="rightTab === 'feed'" class="mt-2 flex flex-wrap gap-1 text-xs">
@@ -270,12 +289,10 @@
         </div>
 
         <div v-else-if="rightTab === 'strategy'" class="mt-2 flex items-center gap-1 text-xs flex-wrap">
-          <button v-for="k in ['pb4h','bo4h','st4h','st15','news','vc4h','snr1d']" :key="k" @click="strategyTab = k"
+          <button v-for="k in ['pb4h','bo4h','st4h','bo15','st15','news','vc4h','snr1d']" :key="k" @click="strategyTab = k"
                   class="px-2.5 py-1 rounded transition"
-                  :title="holdNote(k) ? 'Giữ lệnh: trung vị ' + holdNote(k).med + ' · trung bình ' + holdNote(k).avg + ' · 10% số lệnh kéo tới ' + holdNote(k).p90 : ''"
                   :class="strategyTab === k ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
-            <span v-if="holdNote(k) && holdNote(k).slow" class="text-gold" title="Hệ thống giữ lệnh lâu">⏳</span>
-            {{ k === 'pb4h' ? 'Pullback H4 + filter (RR 1:10)' : k === 'bo4h' ? 'Breakout H4 (RR 1:8)' : k === 'st4h' ? 'Supertrend H4 (RR 1:8)' : k === 'news' ? 'News Binance (bán 24h)' : k === 'vc4h' ? 'Bán tháo volume H4 (win ~67%)' : k === 'snr1d' ? 'SNR khung ngày (RR 1:8)' : 'Supertrend H4 (RR 1:1.5)' }}
+            {{ k === 'pb4h' ? 'Pullback H4 + filter (RR 1:10)' : k === 'bo4h' ? 'Breakout H4 (RR 1:8)' : k === 'st4h' ? 'Supertrend H4 (RR 1:8)' : k === 'bo15' ? 'Breakout H4 (RR 1:1.5)' : k === 'news' ? 'News Binance (bán 24h)' : k === 'vc4h' ? 'Bán tháo volume H4 (win ~67%)' : k === 'snr1d' ? 'SNR khung ngày (RR 1:5)' : 'Supertrend H4 (RR 1:1.5)' }}
             <span class="text-muted">{{ strategySignals[k].length }}</span>
             <span v-if="logStats[k].n" class="font-mono font-semibold"
                   :class="logStats[k].totalR > 0 ? 'text-up' : logStats[k].totalR < 0 ? 'text-down' : 'text-muted'"
@@ -331,7 +348,7 @@
           </button>
         </template>
 
-        <template v-else-if="rightTab === 'screener'">
+        <template v-else-if="rightTab === 'screener' && screenerMode === 'vol'">
           <div v-if="!volwatch.results.length" class="p-8 text-center text-sm text-muted">
             <div class="text-2xl mb-2">🌋</div>Chưa có dữ liệu. Server chấm điểm ~470 hợp đồng mỗi giờ (mất ~2–3 phút).
           </div>
@@ -352,6 +369,40 @@
               <div title="Funding gần nhất (%/kỳ)"><div class="text-muted">Funding</div><div class="font-mono num" :class="r.fund < 0 ? 'text-down' : 'text-gray-300'">{{ r.fund }}%</div></div>
             </div>
             <div class="mt-1 text-[10px] text-muted">{{ r.why.join(' · ') }} · vol24h {{ fmtPrice(r.vol24) }}</div>
+          </button>
+        </template>
+
+        <template v-else-if="rightTab === 'screener'">
+          <div v-if="screenerLoading && !screener.results.length" class="p-8 text-center text-sm text-muted">
+            Đang quét…
+          </div>
+          <div v-else-if="!screener.results.length" class="p-8 text-center text-sm text-muted">
+            <div class="text-2xl mb-2">🔍</div>
+            Chưa có dữ liệu screener.<br />
+            <span class="text-xs">Server quét lại mỗi {{ Math.round((screener.interval_s ?? 21600) / 3600) }} giờ.</span>
+          </div>
+
+          <button v-for="(r, i) in screener.results" :key="r.symbol" @click="openScreenerRow(r)"
+                  class="w-full text-left px-4 py-2.5 border-b border-line/70 hover:bg-panel2 transition"
+                  :class="symbol === r.symbol && timeframe === '1d' ? 'bg-panel2' : ''">
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] text-muted w-4 shrink-0">{{ i + 1 }}</span>
+              <span class="font-semibold text-sm">{{ r.symbol }}</span>
+              <span class="font-mono num text-[11px] text-muted">{{ fmtPrice(r.price) }}</span>
+              <span class="ml-auto font-mono num text-sm text-gold font-semibold">{{ r.score }}</span>
+            </div>
+            <div class="mt-1.5 grid grid-cols-4 gap-2 text-[11px]">
+              <div :title="'Biên độ Bollinger đang thấp hơn ' + (100 - r.bb_pctile) + '% lịch sử'"><div class="text-muted">BB%ile</div><div class="font-mono num text-gray-300">{{ r.bb_pctile }}</div></div>
+              <div :title="'ATR đang thấp hơn ' + (100 - r.atr_pctile) + '% lịch sử'"><div class="text-muted">ATR%ile</div><div class="font-mono num text-gray-300">{{ r.atr_pctile }}</div></div>
+              <div title="Volume 7 ngày / 30 ngày"><div class="text-muted">Vol×</div><div class="font-mono num text-gray-300">{{ r.vol_ratio }}</div></div>
+              <div title="Điểm phân kỳ OBV vs giá (nến ngày)"><div class="text-muted">OBV-D</div><div class="font-mono num text-gray-300">{{ r.obv_div }}</div></div>
+            </div>
+            <div class="mt-1.5 grid grid-cols-3 gap-2 text-[11px] pt-1.5 border-t border-line/50">
+              <div title="Biên độ giá trong khung intraday"><div class="text-muted">Flat {{ intradayHours }}h</div><div class="font-mono num text-gray-300">{{ r.intraday_flat_pct != null ? r.intraday_flat_pct + '%' : '—' }}</div></div>
+              <div title="Volume 6 nến gần nhất / TB toàn khung"><div class="text-muted">Vol pickup</div><div class="font-mono num text-gray-300">{{ r.intraday_vol_pickup ?? '—' }}</div></div>
+              <div title="Điểm phân kỳ OBV vs giá (intraday)"><div class="text-muted">Intraday</div><div class="font-mono num text-gray-300">{{ r.intraday_score ?? '—' }}</div></div>
+            </div>
+            <div class="mt-1 text-[10px] text-muted">Đi ngang {{ r.days_in_range }} ngày (daily) · vol24h {{ fmtPrice(r.quote_volume_24h) }}</div>
           </button>
         </template>
 
@@ -418,22 +469,18 @@
               {{ logStats[strategyTab].totalR >= 0 ? '+' : '' }}{{ logStats[strategyTab].totalR.toFixed(1) }}R
             </span>
             <span class="text-muted">{{ strategySignals[strategyTab].filter((x) => x.status === 'open').length }} đang mở · {{ strategySignals[strategyTab].filter((x) => x.status === 'pending').length }} chờ khớp</span>
-            <span v-if="holdNote(strategyTab)" class="ml-auto px-1.5 py-0.5 rounded text-[10px] font-semibold"
-                  :class="holdNote(strategyTab).slow ? 'bg-gold/15 text-gold' : 'bg-line text-muted'"
-                  :title="'Thời gian giữ lệnh đo từ backtest 98 coin/5 năm: trung vị ' + holdNote(strategyTab).med + ', trung bình ' + holdNote(strategyTab).avg + ', 10% số lệnh kéo tới ' + holdNote(strategyTab).p90 + '. Tính khoảng vốn bị giữ theo con số trung bình, không phải trung vị.'">
-              ⏱ giữ {{ holdNote(strategyTab).med }}<template v-if="holdNote(strategyTab).slow"> · TB {{ holdNote(strategyTab).avg }}</template>
-            </span>
           </div>
           <div v-if="!strategySignals[strategyTab].length" class="p-8 text-center text-sm text-muted">
             <div class="text-2xl mb-2">🎯</div>
             Chưa có tín hiệu {{ strategyTab }}.<br />
             <span class="text-xs">
-              {{ strategyTab === 'bo4h' ? 'Chỉ nhận tín hiệu khi ≥2 coin khác cùng ra tín hiệu Breakout cùng chiều trong 24h (đồng thuận thị trường). ' : '' }}{{ strategyTab === 'pb4h' ? 'Xu hướng EMA50/200 (H4) còn non (≤141 nến), chưa kéo xa EMA200 → giá đóng cửa lại trên/dưới EMA20 với nến có thân → đặt LIMIT thấp hơn giá đóng 1 ATR (chờ 24h), SL 2 ATR, TP 1:10; nếu sau 4 ngày (24 nến H4) chưa lời được 2R thì đóng ở giá hiện tại.'
-                 : strategyTab === 'bo4h' ? 'Nến H4 đóng phá biên 20 nến (thân lớn) + volume ≥1.2× + BTC cùng hướng + giá cùng phía EMA200 + phá xa biên + coin chưa vượt trội BTC 30 ngày (≤ +3% theo hướng lệnh) → CHỈ MUA, đặt LIMIT ngay tại giá đóng (chờ 24h), SL cực trị 10 nến, TP 1:8; nếu sau 2 ngày (12 nến H4) chưa lời được 1R thì đóng ở giá hiện tại. Không lọc giờ NY.'
+              {{ strategyTab === 'bo4h' ? 'Chỉ nhận tín hiệu khi ≥2 coin khác cùng ra tín hiệu Breakout cùng chiều trong 24h (đồng thuận thị trường). ' : '' }}{{ strategyTab === 'pb4h' ? 'Xu hướng EMA50/200 (H4) còn non (≤141 nến), chưa kéo xa EMA200 → giá đóng cửa lại trên/dưới EMA20 với nến có thân → đặt LIMIT thấp hơn giá đóng 1 ATR (chờ 24h), SL 2 ATR, TP 1:10.'
+                 : strategyTab === 'bo4h' ? 'Nến H4 đóng phá biên 20 nến (thân lớn) + volume ≥1.2× + BTC cùng hướng + giá cùng phía EMA200 + phá xa biên + coin chưa vượt trội BTC 30 ngày (≤ +3% theo hướng lệnh) → CHỈ MUA, đặt LIMIT thấp hơn giá đóng 0.5 ATR (chờ 24h), SL cực trị 10 nến, TP 1:8; nếu sau 2 ngày (12 nến H4) chưa lời được 1R thì đóng ở giá hiện tại. Không lọc giờ NY.'
                  : strategyTab === 'st4h' ? 'Supertrend (3×ATR14) đổi hướng ở nến H4 đóng cửa, thuận xu hướng EMA50/200 → CHỈ BÁN (tín hiệu mua có kỳ vọng ≈0: −0.02R ở TP 2R, −0.05R ở TP 3R trên 2.700 lệnh) → đặt LIMIT cao hơn giá đóng 0.25 ATR (chờ 24h), SL 1 ATR, TP 1:8. Chỉ chạy khi BTC đã GIẢM trong 30 ngày — nên im lặng suốt sóng tăng.'
-                 : strategyTab === 'vc4h' ? 'Coin giảm 3 nến H4 liên tiếp với volume > 3 lần trung bình (bán tháo), nến đóng lúc 16:00 hoặc 20:00 UTC (phiên Mỹ) → BÁN TIẾP ĐÀ ở giá đóng, TP 1.5 ATR, SL 1.5 ATR, tự đóng sau tối đa 5 ngày. Backtest 98 coin/5 năm: thắng 67%, +0.33R/lệnh, dương 6/6 năm.'
+                 : strategyTab === 'bo15' ? 'Cùng tín hiệu Breakout H4 nhưng TP 1:1.5 (thắng ~45%): đường vốn mượt hơn, kỳ vọng mỗi lệnh ~ nửa bản 1:5. Trùng thời điểm với hệ thống Breakout H4 gốc.'
+                 : strategyTab === 'vc4h' ? 'Coin giảm 3 nến H4 liên tiếp với volume > 3 lần trung bình (bán tháo), nến đóng lúc 16:00 hoặc 20:00 UTC (phiên Mỹ) → BÁN TIẾP ĐÀ ở giá đóng, TP 1.5 ATR, SL 1.5 ATR, tự đóng sau tối đa 3 ngày. Backtest 98 coin/5 năm: thắng 67%, +0.33R/lệnh, dương 6/6 năm.'
                  : strategyTab === 'news' ? 'Khi Binance gắn nhãn Monitoring hoặc huỷ niêm yết spot một coin có USDT perp → BÁN ngay ở giá hiện tại, SL +10%, tự đóng sau 24h. Lịch sử: Monitoring TB +2.6%/lệnh (thắng 61%), huỷ niêm yết TB +5.6%/lệnh (thắng 58%). Đồng thời chặn lệnh MUA của các hệ thống khác trên coin đó 30 ngày.'
-                 : strategyTab === 'snr1d' ? 'Malaysian SNR khung NGÀY: mức giá sinh ra từ cú đảo chiều mạnh (≥2 ATR), giá chạm lại một lần rồi ĐÓNG XUYÊN QUA → mức đổi vai trò (kháng cự thành hỗ trợ và ngược lại) → đặt LIMIT tại mức đó chờ giá quay lại trong 20 ngày, SL 1 ATR ngày, TP 1:8, tự đóng sau tối đa 14 ngày (thực tế trung vị 7 ngày). Chỉ đặt khi nến phá vỡ đóng cùng phía MA50 với chiều lệnh. Backtest 98 coin/5 năm, train 40 / holdout 58: +0.44R / +0.43R mỗi lệnh (TP 1:8), thắng 23%, dương 6/6 năm, 18/18 cấu hình tham số đều dương. Giữ lệnh lâu (trung bình vài tuần) và chỉ ~8 lệnh/tuần cho toàn bộ danh sách.'
+                 : strategyTab === 'snr1d' ? 'Malaysian SNR khung NGÀY: mức giá sinh ra từ cú đảo chiều mạnh (≥2 ATR), giá chạm lại một lần rồi ĐÓNG XUYÊN QUA → mức đổi vai trò (kháng cự thành hỗ trợ và ngược lại) → đặt LIMIT tại mức đó chờ giá quay lại trong 20 ngày, SL 1 ATR ngày, TP 1:5, tự đóng sau 30 ngày. Chỉ đặt khi nến phá vỡ đóng cùng phía MA50 với chiều lệnh. Backtest 98 coin/5 năm, train 40 / holdout 58: +0.26R / +0.34R mỗi lệnh, thắng 29%, dương 6/6 năm, 18/18 cấu hình tham số đều dương. Giữ lệnh lâu (trung bình vài tuần) và chỉ ~8 lệnh/tuần cho toàn bộ danh sách.'
                  : 'Cùng tín hiệu Supertrend H4 nhưng TP 1:1.5 (thắng ~45%): SL 2 ATR, TP 1:1.5. Trùng thời điểm với hệ thống Supertrend H4 gốc.' }}
             </span>
           </div>
@@ -546,19 +593,22 @@ createApp({
     const notifyOn = ref(notifyPermission.value === 'granted');
     const now = ref(Date.now());
     const rightTab = ref('alerts');
-    const strategy = reactive({ pb4h: true, bo4h: true, st4h: true, st15: true, news: true, vc4h: true, snr1d: true, zone: true, ny: true });
+    const screener = ref({ updated_at: null, scanned: 0, results: [] });
+    const screenerLoading = ref(false);
+    const intradayHours = computed(() => screener.value.intraday_lookback_h ?? 48);
+    const strategy = reactive({ pb4h: true, bo4h: true, st4h: true, bo15: true, st15: true, news: true, vc4h: true, snr1d: true, zone: true, ny: true });
     const zoneAlerts = ref([]);
     const selectedZoneId = ref(null);
     let zoneLines = [];
     const strategyTab = ref('bo4h');
-    const strategySignals = reactive({ pb4h: [], bo4h: [], st4h: [], st15: [], news: [], vc4h: [], snr1d: [] });
+    const strategySignals = reactive({ pb4h: [], bo4h: [], st4h: [], bo15: [], st15: [], news: [], vc4h: [], snr1d: [] });
     const closedTrades = computed(() =>
       Object.values(strategySignals).flat()
         .filter((s) => s.status === 'win' || s.status === 'loss')
         .sort((a, b) => (b.exit_time ?? b.closed_at ?? 0) - (a.exit_time ?? a.closed_at ?? 0))
     );
     // Lệnh trailing có R thực tế (s.r); lệnh TP cố định thì +rr khi thắng, -1 khi thua.
-    
+    const screenerMode = ref('acc');
     const volwatch = ref({ results: [] });
     async function loadVolwatch() {
       try { volwatch.value = await (await fetch('/api/volwatch')).json(); } catch {}
@@ -611,24 +661,7 @@ createApp({
       });
       if (changed) saveNotifs();
     }
-    // Thời gian giữ lệnh THỰC TẾ đo từ backtest 98 coin / 5 năm ở đúng cấu hình đang chạy (ngày)
-    const HOLD_TIME = {
-      pb4h:  { med: 5.2,  avg: 7.8,  p90: 17 },
-      bo4h:  { med: 2.2,  avg: 8.2,  p90: 28 },
-      st4h:  { med: 2.0,  avg: 6.0,  p90: 19 },
-      st15:  { med: 0.8,  avg: 1.1,  p90: 2 },
-      vc4h:  { med: 0.7,  avg: 1.0,  p90: 2 },
-      snr1d: { med: 7.0,  avg: 7.8,  p90: 14 },
-      news:  { med: 1.0,  avg: 1.0,  p90: 1 },
-    };
-    const fmtDays = (d) => (d < 1 ? Math.round(d * 24) + ' giờ' : d < 10 ? d.toFixed(1).replace('.0', '') + ' ngày' : Math.round(d) + ' ngày');
-    const holdNote = (k) => {
-      const t = HOLD_TIME[k];
-      if (!t) return null;
-      return { med: fmtDays(t.med), avg: fmtDays(t.avg), p90: fmtDays(t.p90), slow: t.avg >= 6 };
-    };
-
-    const SYS_NAMES = { pb4h: '🌀 PB H4', bo4h: '💥 BO H4', st4h: '📈 ST H4', st15: '📈 ST 1.5', news: '📰 News', vc4h: '🌋 VC H4', snr1d: '🧱 SNR D1' };
+    const SYS_NAMES = { pb4h: '🌀 PB H4', bo4h: '💥 BO H4', st4h: '📈 ST H4', bo15: '💥 BO 1.5', st15: '📈 ST 1.5', news: '📰 News', vc4h: '🌋 VC H4', snr1d: '🧱 SNR D1' };
     const sysName = (k) => SYS_NAMES[k] || k;
     const NOTIF_KEY = 'smc_notif_log_v1';
     const notifLog = ref((() => { try { return JSON.parse(localStorage.getItem(NOTIF_KEY) || '[]'); } catch { return []; } })());
@@ -931,9 +964,23 @@ createApp({
       await fetch(`/api/test-signal?symbol=${symbol.value}&timeframe=${timeframe.value}`, { method: 'POST' });
     }
 
+    async function loadScreener() {
+      screenerLoading.value = true;
+      try {
+        screener.value = await (await fetch('/api/screener')).json();
+      } catch {}
+      finally { screenerLoading.value = false; }
+    }
     function openScreenerTab() {
       rightTab.value = 'screener';
-      loadVolwatch();
+      loadScreener();
+    }
+    function openScreenerRow(row) {
+      ensureSymbol(row.symbol);
+      symbol.value = row.symbol;
+      timeframe.value = '1d';
+      selectedId.value = null;
+      loadChart();
     }
 
     async function toggleStrategy(system) {
@@ -1120,7 +1167,7 @@ createApp({
       if (!notifyOn.value || Notification.permission !== 'granted') return;
       try {
         const bull = sig.direction === 'bullish';
-        const sysLabel = sig.system === 'pb4h' ? '🌀 PB H4' : sig.system === 'bo4h' ? '💥 BO H4' : sig.system === 'st4h' ? '📈 ST H4' : '📈 ST 1.5';
+        const sysLabel = sig.system === 'pb4h' ? '🌀 PB H4' : sig.system === 'bo4h' ? '💥 BO H4' : sig.system === 'st4h' ? '📈 ST H4' : sig.system === 'bo15' ? '💥 BO 1.5' : '📈 ST 1.5';
         const n = new Notification(
           `${sysLabel} · ${sig.symbol} ${sig.timeframe} · ${bull ? '▲ Bullish' : '▼ Bearish'}`,
           {
@@ -1172,6 +1219,7 @@ createApp({
           strategySignals.pb4h = msg.data.pb4h || [];
           strategySignals.bo4h = msg.data.bo4h || [];
           strategySignals.st4h = msg.data.st4h || [];
+          strategySignals.bo15 = msg.data.bo15 || [];
           strategySignals.st15 = msg.data.st15 || [];
           strategySignals.news = msg.data.news || [];
           strategySignals.vc4h = msg.data.vc4h || [];
@@ -1250,6 +1298,7 @@ createApp({
       } catch {}
       loadChart();
       connectSignals();
+      loadScreener();
       loadFeed();
       feedTimer = setInterval(loadFeed, 120000);
       clockTimer = setInterval(() => (now.value = Date.now()), 15000);
@@ -1265,12 +1314,12 @@ createApp({
     return {
       chartEl, symbols, chartTimeframes, symbol, timeframe, customSymbol, signals, filter, filters,
       filteredSignals, wsState, status, lastPrice, priceDir, loading, chartError, selectedId, flashIds, soundOn,
-      notifyOn, notifyPermission, rightTab,
+      notifyOn, notifyPermission, rightTab, screener, screenerLoading, intradayHours,
       strategy, strategyTab, strategySignals, selectedStrategyId, strategyLabels, closedTrades, logStats,
       fmtPrice, fmtClock, fmtDate, timeAgo, fmtR, entryTime, heldFor,
       selectSymbol, selectTimeframe, applyCustom, openSignal, sendTest, toggleNotify,
-      openScreenerTab,
-      toggleStrategy, openStrategyTab, statusLabel, holdNote, feed, showOrig, feedFilter, feedCoinOnly, feedSources, filteredFeed, loadFeed, notifLog, notifOpen, notifFilter, unreadCount, filteredNotifs, markAllRead, clearNotifs, openNotif, volwatch, loadVolwatch, openVolRow, pnl, openStrategySignal, zoneAlerts, selectedZoneId, openZoneAlert,
+      openScreenerTab, openScreenerRow, loadScreener,
+      toggleStrategy, openStrategyTab, statusLabel, feed, showOrig, feedFilter, feedCoinOnly, feedSources, filteredFeed, loadFeed, notifLog, notifOpen, notifFilter, unreadCount, filteredNotifs, markAllRead, clearNotifs, openNotif, screenerMode, volwatch, loadVolwatch, openVolRow, pnl, openStrategySignal, zoneAlerts, selectedZoneId, openZoneAlert,
     };
   },
 }).mount('#app');

@@ -77,6 +77,11 @@
               :class="strategy.st4h ? 'text-gold' : 'text-muted'">
         {{ strategy.st4h ? '📈 ST H4 on' : '📈 ST H4 off' }}
       </button>
+      <button @click="toggleStrategy('bo15')"
+              class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
+              :class="strategy.bo15 ? 'text-gold' : 'text-muted'">
+        {{ strategy.bo15 ? '💥 BO 1.5 on' : '💥 BO 1.5 off' }}
+      </button>
       <button @click="toggleStrategy('st15')"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
               :class="strategy.st15 ? 'text-gold' : 'text-muted'">
@@ -270,12 +275,12 @@
         </div>
 
         <div v-else-if="rightTab === 'strategy'" class="mt-2 flex items-center gap-1 text-xs flex-wrap">
-          <button v-for="k in ['pb4h','bo4h','st4h','st15','news','vc4h','snr1d']" :key="k" @click="strategyTab = k"
+          <button v-for="k in ['pb4h','bo4h','st4h','bo15','st15','news','vc4h','snr1d']" :key="k" @click="strategyTab = k"
                   class="px-2.5 py-1 rounded transition"
                   :title="holdNote(k) ? 'Giữ lệnh: trung vị ' + holdNote(k).med + ' · trung bình ' + holdNote(k).avg + ' · 10% số lệnh kéo tới ' + holdNote(k).p90 : ''"
                   :class="strategyTab === k ? 'bg-panel2 text-gray-100' : 'text-muted hover:text-gray-200'">
             <span v-if="holdNote(k) && holdNote(k).slow" class="text-gold" title="Hệ thống giữ lệnh lâu">⏳</span>
-            {{ k === 'pb4h' ? 'Pullback H4 + filter (RR 1:10)' : k === 'bo4h' ? 'Breakout H4 (RR 1:8)' : k === 'st4h' ? 'Supertrend H4 (RR 1:8)' : k === 'news' ? 'News Binance (bán 24h)' : k === 'vc4h' ? 'Bán tháo volume H4 (win ~67%)' : k === 'snr1d' ? 'SNR khung ngày (RR 1:8)' : 'Supertrend H4 (RR 1:1.5)' }}
+            {{ k === 'pb4h' ? 'Pullback H4 + filter (RR 1:10)' : k === 'bo4h' ? 'Breakout H4 (RR 1:8)' : k === 'st4h' ? 'Supertrend H4 (RR 1:8)' : k === 'bo15' ? 'Breakout H4 (RR 1:1.5)' : k === 'news' ? 'News Binance (bán 24h)' : k === 'vc4h' ? 'Bán tháo volume H4 (win ~67%)' : k === 'snr1d' ? 'SNR khung ngày (RR 1:8)' : 'Supertrend H4 (RR 1:1.5)' }}
             <span class="text-muted">{{ strategySignals[k].length }}</span>
             <span v-if="logStats[k].n" class="font-mono font-semibold"
                   :class="logStats[k].totalR > 0 ? 'text-up' : logStats[k].totalR < 0 ? 'text-down' : 'text-muted'"
@@ -428,9 +433,10 @@
             <div class="text-2xl mb-2">🎯</div>
             Chưa có tín hiệu {{ strategyTab }}.<br />
             <span class="text-xs">
-              {{ strategyTab === 'bo4h' ? 'Chỉ nhận tín hiệu khi ≥2 coin khác cùng ra tín hiệu Breakout cùng chiều trong 24h (đồng thuận thị trường). ' : '' }}{{ strategyTab === 'pb4h' ? 'Xu hướng EMA50/200 (H4) còn non (≤141 nến), chưa kéo xa EMA200 → giá đóng cửa lại trên/dưới EMA20 với nến có thân → đặt LIMIT thấp hơn giá đóng 1 ATR (chờ 24h), SL 2 ATR, TP 1:10; nếu sau 4 ngày (24 nến H4) chưa lời được 2R thì đóng ở giá hiện tại.'
-                 : strategyTab === 'bo4h' ? 'Nến H4 đóng phá biên 20 nến (thân lớn) + volume ≥1.2× + BTC cùng hướng + giá cùng phía EMA200 + phá xa biên + coin chưa vượt trội BTC 30 ngày (≤ +3% theo hướng lệnh) → CHỈ MUA, đặt LIMIT ngay tại giá đóng (chờ 24h), SL cực trị 10 nến, TP 1:8; nếu sau 2 ngày (12 nến H4) chưa lời được 1R thì đóng ở giá hiện tại. Không lọc giờ NY.'
+              {{ strategyTab === 'bo4h' ? 'Chỉ nhận tín hiệu khi ≥2 coin khác cùng ra tín hiệu Breakout cùng chiều trong 24h (đồng thuận thị trường). ' : '' }}{{ strategyTab === 'pb4h' ? 'Xu hướng EMA50/200 (H4) còn non (≤141 nến), chưa kéo xa EMA200 → giá đóng cửa lại trên/dưới EMA20 với nến có thân → đặt LIMIT thấp hơn giá đóng 1 ATR (chờ 24h), SL 2 ATR, TP 1:10.'
+                 : strategyTab === 'bo4h' ? 'Nến H4 đóng phá biên 20 nến (thân lớn) + volume ≥1.2× + BTC cùng hướng + giá cùng phía EMA200 + phá xa biên + coin chưa vượt trội BTC 30 ngày (≤ +3% theo hướng lệnh) → CHỈ MUA, đặt LIMIT thấp hơn giá đóng 0.5 ATR (chờ 24h), SL cực trị 10 nến, TP 1:8; nếu sau 2 ngày (12 nến H4) chưa lời được 1R thì đóng ở giá hiện tại. Không lọc giờ NY.'
                  : strategyTab === 'st4h' ? 'Supertrend (3×ATR14) đổi hướng ở nến H4 đóng cửa, thuận xu hướng EMA50/200 → CHỈ BÁN (tín hiệu mua có kỳ vọng ≈0: −0.02R ở TP 2R, −0.05R ở TP 3R trên 2.700 lệnh) → đặt LIMIT cao hơn giá đóng 0.25 ATR (chờ 24h), SL 1 ATR, TP 1:8. Chỉ chạy khi BTC đã GIẢM trong 30 ngày — nên im lặng suốt sóng tăng.'
+                 : strategyTab === 'bo15' ? 'Cùng tín hiệu Breakout H4 nhưng TP 1:1.5 (thắng ~45%): đường vốn mượt hơn, kỳ vọng mỗi lệnh ~ nửa bản 1:5. Trùng thời điểm với hệ thống Breakout H4 gốc.'
                  : strategyTab === 'vc4h' ? 'Coin giảm 3 nến H4 liên tiếp với volume > 3 lần trung bình (bán tháo), nến đóng lúc 16:00 hoặc 20:00 UTC (phiên Mỹ) → BÁN TIẾP ĐÀ ở giá đóng, TP 1.5 ATR, SL 1.5 ATR, tự đóng sau tối đa 5 ngày. Backtest 98 coin/5 năm: thắng 67%, +0.33R/lệnh, dương 6/6 năm.'
                  : strategyTab === 'news' ? 'Khi Binance gắn nhãn Monitoring hoặc huỷ niêm yết spot một coin có USDT perp → BÁN ngay ở giá hiện tại, SL +10%, tự đóng sau 24h. Lịch sử: Monitoring TB +2.6%/lệnh (thắng 61%), huỷ niêm yết TB +5.6%/lệnh (thắng 58%). Đồng thời chặn lệnh MUA của các hệ thống khác trên coin đó 30 ngày.'
                  : strategyTab === 'snr1d' ? 'Malaysian SNR khung NGÀY: mức giá sinh ra từ cú đảo chiều mạnh (≥2 ATR), giá chạm lại một lần rồi ĐÓNG XUYÊN QUA → mức đổi vai trò (kháng cự thành hỗ trợ và ngược lại) → đặt LIMIT tại mức đó chờ giá quay lại trong 20 ngày, SL 1 ATR ngày, TP 1:8, tự đóng sau tối đa 14 ngày (thực tế trung vị 7 ngày). Chỉ đặt khi nến phá vỡ đóng cùng phía MA50 với chiều lệnh. Backtest 98 coin/5 năm, train 40 / holdout 58: +0.44R / +0.43R mỗi lệnh (TP 1:8), thắng 23%, dương 6/6 năm, 18/18 cấu hình tham số đều dương. Giữ lệnh lâu (trung bình vài tuần) và chỉ ~8 lệnh/tuần cho toàn bộ danh sách.'
@@ -546,12 +552,12 @@ createApp({
     const notifyOn = ref(notifyPermission.value === 'granted');
     const now = ref(Date.now());
     const rightTab = ref('alerts');
-    const strategy = reactive({ pb4h: true, bo4h: true, st4h: true, st15: true, news: true, vc4h: true, snr1d: true, zone: true, ny: true });
+    const strategy = reactive({ pb4h: true, bo4h: true, st4h: true, bo15: true, st15: true, news: true, vc4h: true, snr1d: true, zone: true, ny: true });
     const zoneAlerts = ref([]);
     const selectedZoneId = ref(null);
     let zoneLines = [];
     const strategyTab = ref('bo4h');
-    const strategySignals = reactive({ pb4h: [], bo4h: [], st4h: [], st15: [], news: [], vc4h: [], snr1d: [] });
+    const strategySignals = reactive({ pb4h: [], bo4h: [], st4h: [], bo15: [], st15: [], news: [], vc4h: [], snr1d: [] });
     const closedTrades = computed(() =>
       Object.values(strategySignals).flat()
         .filter((s) => s.status === 'win' || s.status === 'loss')
@@ -613,9 +619,10 @@ createApp({
     }
     // Thời gian giữ lệnh THỰC TẾ đo từ backtest 98 coin / 5 năm ở đúng cấu hình đang chạy (ngày)
     const HOLD_TIME = {
-      pb4h:  { med: 5.2,  avg: 7.8,  p90: 17 },
+      pb4h:  { med: 5.2,  avg: 13.1, p90: 50 },
       bo4h:  { med: 2.2,  avg: 8.2,  p90: 28 },
       st4h:  { med: 2.0,  avg: 6.0,  p90: 19 },
+      bo15:  { med: 2.2,  avg: 2.5,  p90: 3 },
       st15:  { med: 0.8,  avg: 1.1,  p90: 2 },
       vc4h:  { med: 0.7,  avg: 1.0,  p90: 2 },
       snr1d: { med: 7.0,  avg: 7.8,  p90: 14 },
@@ -628,7 +635,7 @@ createApp({
       return { med: fmtDays(t.med), avg: fmtDays(t.avg), p90: fmtDays(t.p90), slow: t.avg >= 6 };
     };
 
-    const SYS_NAMES = { pb4h: '🌀 PB H4', bo4h: '💥 BO H4', st4h: '📈 ST H4', st15: '📈 ST 1.5', news: '📰 News', vc4h: '🌋 VC H4', snr1d: '🧱 SNR D1' };
+    const SYS_NAMES = { pb4h: '🌀 PB H4', bo4h: '💥 BO H4', st4h: '📈 ST H4', bo15: '💥 BO 1.5', st15: '📈 ST 1.5', news: '📰 News', vc4h: '🌋 VC H4', snr1d: '🧱 SNR D1' };
     const sysName = (k) => SYS_NAMES[k] || k;
     const NOTIF_KEY = 'smc_notif_log_v1';
     const notifLog = ref((() => { try { return JSON.parse(localStorage.getItem(NOTIF_KEY) || '[]'); } catch { return []; } })());
@@ -1120,7 +1127,7 @@ createApp({
       if (!notifyOn.value || Notification.permission !== 'granted') return;
       try {
         const bull = sig.direction === 'bullish';
-        const sysLabel = sig.system === 'pb4h' ? '🌀 PB H4' : sig.system === 'bo4h' ? '💥 BO H4' : sig.system === 'st4h' ? '📈 ST H4' : '📈 ST 1.5';
+        const sysLabel = sig.system === 'pb4h' ? '🌀 PB H4' : sig.system === 'bo4h' ? '💥 BO H4' : sig.system === 'st4h' ? '📈 ST H4' : sig.system === 'bo15' ? '💥 BO 1.5' : '📈 ST 1.5';
         const n = new Notification(
           `${sysLabel} · ${sig.symbol} ${sig.timeframe} · ${bull ? '▲ Bullish' : '▼ Bearish'}`,
           {
@@ -1172,6 +1179,7 @@ createApp({
           strategySignals.pb4h = msg.data.pb4h || [];
           strategySignals.bo4h = msg.data.bo4h || [];
           strategySignals.st4h = msg.data.st4h || [];
+          strategySignals.bo15 = msg.data.bo15 || [];
           strategySignals.st15 = msg.data.st15 || [];
           strategySignals.news = msg.data.news || [];
           strategySignals.vc4h = msg.data.vc4h || [];
