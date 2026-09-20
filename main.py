@@ -287,6 +287,17 @@ strategy_enabled: dict = {**{k: True for k in STRATEGY_SYSTEMS}, "zone": True, "
 # "ny" = chỉ nhận tín hiệu khi nến H4 đóng lúc 16:00/20:00 UTC (phiên New York). Backtest 98 coin: PB +0.22R -> +0.46R, BO +0.25R -> +0.35R, ST +0.24R -> +0.34R.
 # BO H4 không dùng lọc NY: nghiên cứu bối cảnh cho thấy lọc giờ làm BO xấu đi (lãi/sụt giảm 1.19 -> 0.68); BO dùng lọc sức mạnh tương đối thay thế.
 NY_SYSTEMS = ("pb4h", "st4h", "st15")
+# ─── TRỌNG SỐ RỦI RO theo hệ thống (nhân vào cỡ lệnh, KHÔNG chặn tín hiệu) ───
+# PB là hệ thống bị phân bổ quá nặng: nó đóng góp sụt giảm lớn nhất trong 6 hệ thống
+# (-127.6R so với -16.6R của VC) trong khi lợi nhuận chỉ đứng thứ hai.
+# Quét trọng số PB từ 0 đến 1.5 (bước 0.05), kế toán theo tuần ĐÓNG lệnh:
+#   đường cong MƯỢT (chỉ 1 lần đổi chiều) -> hiệu ứng thật, không phải dò tham số
+#   wPB=0.50 tối đa hoá GIÁ TRỊ NHỎ NHẤT của hai nửa thời gian (không tối ưu vào nửa nào):
+#      lãi/sụt 9.25 -> 11.55 (+25%) | R/năm -13% | sụt giảm -30% | Sharpe 2.34 -> 2.39
+#      nửa đầu 11.25 -> 11.70, nửa sau 9.06 -> 11.75 (tốt lên ở CẢ HAI nửa)
+# PB là hệ thống DUY NHẤT có tính chất này: giảm BO/ST/ST15/VC đều làm danh mục TỆ ĐI.
+# Chỉnh nhiều hệ cùng lúc thì khớp nhiễu (nửa đầu 15.06 nhưng nửa sau chỉ 5.55) -> chỉ chỉnh PB.
+SYSTEM_RISK = {"pb4h": float(os.getenv("PB_RISK_W", "0.5"))}
 # Các hệ thống dùng CHUNG một tín hiệu gốc -> không được tính là "đồng thuận" của nhau.
 # st4h và st15 đều là Supertrend flip H4, chỉ khác TP (1:8 vs 1:1.5).
 SAME_SIGNAL = {"st4h": {"st4h", "st15"}, "st15": {"st4h", "st15"}}
@@ -1454,6 +1465,9 @@ async def emit_signal(system: str, symbol: str, sig: dict):
         n_conf = confluence_count(system, symbol, sig["direction"], int(sig["entry_time"]))
         if n_conf:
             sig["confluence"] = n_conf        # chỉ hiển thị: lệnh có đồng thuận có kỳ vọng cao hơn nhiều
+        rw = SYSTEM_RISK.get(system, 1.0)
+        if rw != 1.0:
+            sig["risk_w"] = rw           # cỡ lệnh khuyến nghị = rủi ro chuẩn x rw
         strategy_seen.add(sig["id"])
         strategy_signals[system].appendleft(sig)
         save_strategy_state()
@@ -1860,7 +1874,8 @@ async def get_strategy_signals(system: str = Query("pb4h")):
     if system not in strategy_signals:
         raise HTTPException(400, f"system không hợp lệ: {system}")
     rr = {"pb4h": None if PB_EXIT == "trail" else PB_RR, "bo4h": BO_RR, "st4h": ST_RR, "st15": ST15_RR, "news": None, "vc4h": round(VC_TP_ATR / VC_SL_ATR, 2), "snr1d": SNR_RR, "nl1d": NL_RR}[system]
-    return {"enabled": strategy_enabled[system], "rr": rr, "signals": list(strategy_signals[system])}
+    return {"enabled": strategy_enabled[system], "rr": rr,
+            "risk_w": SYSTEM_RISK.get(system, 1.0), "signals": list(strategy_signals[system])}
 
 
 @app.post("/api/strategy/toggle")
