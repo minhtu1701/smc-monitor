@@ -832,7 +832,7 @@ createApp({
       const k = ckey(sym, tf);
       if (klineInflight.has(k)) return klineInflight.get(k);
       const p = (async () => {
-        const r = await fetch(`/api/klines?symbol=${encodeURIComponent(sym)}&timeframe=${tf}&limit=500`, { cache: 'no-store' });
+        const r = await fetch(`/api/klines?symbol=${encodeURIComponent(sym)}&timeframe=${tf}&limit=1500`, { cache: 'no-store' });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.detail || r.statusText);
         klineCache.set(k, { data, at: Date.now() });

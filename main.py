@@ -1194,9 +1194,12 @@ def check_snr_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
     return None
 
 
-async def fetch_klines_raw(symbol: str, interval: str, limit: int = 200) -> pd.DataFrame:
-    """Tải nến bằng endpoint THÔ — coin vừa niêm yết chưa có trong markets mà ccxt nạp lúc khởi động."""
-    raw = await exchange.fapiPublicGetKlines({"symbol": symbol, "interval": interval, "limit": limit})
+async def fetch_klines_raw(symbol: str, interval: str, limit: int = 200,
+                           ex: "ccxt.binanceusdm | None" = None) -> pd.DataFrame:
+    """Tải nến bằng endpoint THÔ. Hai lý do dùng nó thay cho ccxt fetch_ohlcv:
+    - coin vừa niêm yết chưa có trong markets mà ccxt nạp lúc khởi động;
+    - ccxt chặn ở 1000 nến còn endpoint thô cho tới 1500 (đo thực tế)."""
+    raw = await (ex or exchange).fapiPublicGetKlines({"symbol": symbol, "interval": interval, "limit": limit})
     return pd.DataFrame([[int(r[0]) // 1000, float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
                          for r in raw], columns=["ts", "open", "high", "low", "close", "volume"])
 
@@ -2005,17 +2008,27 @@ async def toggle_strategy(system: str = Query(...), enabled: bool = Query(...)):
 async def get_klines(
     symbol: str = Query("BTCUSDT"),
     timeframe: str = Query("15m"),
-    limit: int = Query(500, ge=100, le=1500),
+    limit: int = Query(1500, ge=100, le=1500),
 ):
     if timeframe not in ALLOWED_TIMEFRAMES:
         raise HTTPException(400, f"Timeframe không hỗ trợ: {timeframe}")
     symbol = symbol.upper()
     try:
-        # Dùng instance ccxt RIÊNG: `exchange` là hàng đợi chung của scanner + 6 vòng quét chiến lược
+        to_ccxt_symbol(symbol)                      # chỉ để bắt symbol sai định dạng -> 404
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    try:
+        # Instance ccxt RIÊNG: `exchange` là hàng đợi chung của scanner + 6 vòng quét chiến lược
         # (63 coin mỗi vòng). enableRateLimit xếp hàng theo TỪNG instance, nên yêu cầu vẽ chart của
         # người dùng phải đợi hết loạt quét đang chạy. Đo thực tế: 0.47s khi rảnh, 2.1-2.4s khi đang quét.
-        df = await fetch_ohlc(symbol, timeframe, limit, ex=kline_exchange)
-    except (ValueError, ccxt.BadSymbol) as e:
+        # Endpoint THÔ thay cho ccxt fetch_ohlcv: ccxt chặn ở 1000 nến, thô cho tới 1500.
+        # Chi phí đo được: 414ms ở 1000 nến so với 430ms ở 500 — vòng mạng lấn át, tải thêm gần như miễn phí.
+        df = await fetch_klines_raw(symbol, timeframe, limit, ex=kline_exchange)
+        if df.empty:
+            raise HTTPException(404, f"Không có dữ liệu cho {symbol} {timeframe}")
+    except HTTPException:
+        raise
+    except ccxt.BadSymbol as e:
         raise HTTPException(404, str(e))
     except ccxt.BaseError as e:
         raise HTTPException(502, f"Binance lỗi: {e}")
