@@ -305,6 +305,17 @@ BO_MIN_DIST200 = float(os.getenv("BO_MIN_DIST200", "0.11"))
 BO_MIN_ATR_RATIO = float(os.getenv("BO_MIN_ATR_RATIO", "0.73"))
 BO_MIN_BODY = float(os.getenv("BO_MIN_BODY", "0.6"))
 
+# SỐ NẾN NẠP MỖI VÒNG QUÉT. Chỉ báo đều có trí nhớ (EMA200 gieo từ nến đầu, Supertrend đệ quy
+# từ nến 0, PB đếm tuổi xu hướng bằng cách lùi về quá khứ), nên cửa sổ quá ngắn thì tín hiệu LIVE
+# khác tín hiệu BACKTEST. Đo bằng cách gọi CHÍNH hàm live hai lần tại cùng thời điểm — một lần
+# với cửa sổ N nến, một lần với toàn bộ lịch sử (25 coin x 150 điểm = 3750 phép so):
+#   pb4h:  300 nến sai 1.493% | 400 sai 0.133% | 600 sai 0.027% | 900 sai 0.000% | 1200 sai 0.000%
+#   bo4h / st4h / st15: đã khớp tuyệt đối từ 600, nhưng nâng lên cho có biên an toàn.
+#   vc4h: khớp tuyệt đối ngay ở 300 (chỉ cần ~60 nến) -> GIỮ 300, nâng lên chỉ tốn trọng số vô ích.
+#   snr1d: khớp tuyệt đối ở 400 nến NGÀY -> giữ nguyên.
+# Trọng số rate-limit của Binance theo số nến: 1-100 = 1, 101-500 = 2, 501-1000 = 5, >1000 = 10.
+# Nâng 600 -> 900 nằm CÙNG BẬC nên không tốn thêm một đơn vị trọng số nào.
+SCAN_BARS_H4 = int(os.getenv("SCAN_BARS_H4", "900"))
 ALLOWED_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
 TF_SECONDS = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
               "2h": 7200, "4h": 14400, "6h": 21600, "12h": 43200, "1d": 86400}
@@ -1927,11 +1938,11 @@ async def lifespan(app: FastAPI):
     tasks = [asyncio.create_task(scanner_loop()),
              asyncio.create_task(kline_relay_loop()), asyncio.create_task(volwatch_loop()), asyncio.create_task(news_loop()), asyncio.create_task(feed_loop()),
              asyncio.create_task(zone_loop()),
-             asyncio.create_task(generic_loop("pb4h", "4h", 600, check_pb_signal, PB_INTERVAL, start_delay=0)),
-             asyncio.create_task(generic_loop("bo4h", "4h", 600, check_bo_signal, BO_INTERVAL, pre=refresh_btc_regime, start_delay=40)),
-             asyncio.create_task(generic_loop("st4h", "4h", 600, check_st_signal, ST_INTERVAL, pre=refresh_btc_regime, start_delay=80)),
+             asyncio.create_task(generic_loop("pb4h", "4h", SCAN_BARS_H4, check_pb_signal, PB_INTERVAL, start_delay=0)),
+             asyncio.create_task(generic_loop("bo4h", "4h", SCAN_BARS_H4, check_bo_signal, BO_INTERVAL, pre=refresh_btc_regime, start_delay=40)),
+             asyncio.create_task(generic_loop("st4h", "4h", SCAN_BARS_H4, check_st_signal, ST_INTERVAL, pre=refresh_btc_regime, start_delay=80)),
              asyncio.create_task(generic_loop("vc4h", "4h", 300, check_vc_signal, ST_INTERVAL, start_delay=120)),
-             asyncio.create_task(generic_loop("st15", "4h", 600, partial(check_st_signal, rr=ST15_RR, system="st15"), ST_INTERVAL, pre=refresh_btc_regime, start_delay=160)),
+             asyncio.create_task(generic_loop("st15", "4h", SCAN_BARS_H4, partial(check_st_signal, rr=ST15_RR, system="st15"), ST_INTERVAL, pre=refresh_btc_regime, start_delay=160)),
              asyncio.create_task(generic_loop("snr1d", "1d", 400, check_snr_signal, SNR_INTERVAL, start_delay=200)),
              asyncio.create_task(newlisting_loop()),
              asyncio.create_task(funding_loop())]
