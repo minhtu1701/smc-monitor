@@ -557,6 +557,10 @@ volwatch_state: dict = {"updated_at": None, "scanned": 0, "results": [], "interv
 volwatch_exchange: "ccxt.binanceusdm | None" = None
 
 
+# Quét Screener CĂN VÀO MỐC ĐÓNG NẾN, cộng thêm VOLWATCH_OFFSET giây cho Binance chốt nến.
+VOLWATCH_OFFSET = int(os.getenv("VOLWATCH_OFFSET", "20"))
+
+
 async def volwatch_loop():
     import volwatch
     while True:
@@ -566,7 +570,15 @@ async def volwatch_loop():
             raise
         except Exception:
             log.exception("Volwatch loop lỗi")
-        await asyncio.sleep(volwatch_state["interval_s"])
+        # Ngủ tới MỐC ĐÓNG NẾN kế tiếp, không phải ngủ đúng interval_s.
+        # Mô hình ăn nến 1h ĐÃ ĐÓNG. Ngủ theo interval_s làm pha quét trôi tự do: thực tế đo được
+        # nó rơi vào phút :39, nghĩa là số hiển thị đã cũ 39 phút NGAY LÚC QUÉT và cũ tới 99 phút
+        # trước lần quét sau (trung bình 69 phút). Căn vào mốc đóng nến -> trễ 0-60 phút, TB 31.
+        # TĂNG TẦN SUẤT KHÔNG GIÚP: đo thực tế, quét phút :35 cho kết quả y hệt phút :05 cùng giờ,
+        # không một đặc trưng nào trong 23 cái khác nhau, vì cả hai dùng chung một nến 1h đã đóng.
+        iv = max(60, int(volwatch_state["interval_s"]))
+        now = time.time()
+        await asyncio.sleep(max(30.0, (now // iv + 1) * iv + VOLWATCH_OFFSET - now))
 
 
 # ─────────────────────────── News (thông báo Binance) ───────────────────────────
