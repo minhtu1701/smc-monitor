@@ -173,6 +173,13 @@ BTC_TREND_DAYS = int(os.getenv("BTC_TREND_DAYS", "30"))
 # Backtest: PB +0.695R -> +1.963R, ST +0.701R -> +1.677R ở nhóm có đồng thuận. Nhưng nhóm KHÔNG có đồng thuận
 # vẫn lãi +0.55R và chiếm 90% lợi nhuận, nên chỉ hiển thị để cân nhắc vào nặng tay hơn, tuyệt đối không lọc bỏ.
 CONFLUENCE_H = int(os.getenv("CONFLUENCE_H", "48"))
+# QUÉT BÙ khi khởi động: mỗi vòng quét chỉ soi nến ĐÃ ĐÓNG gần nhất, nên mọi tín hiệu sinh ra
+# lúc server tắt là mất vĩnh viễn. Thực tế đo được: app chỉ chạy 3,6/38 giờ -> đánh giá được
+# 2/7 mốc đóng nến H4. Lệnh limit còn hiệu lực LIMIT_BARS nến (24h với H4) nên tín hiệu trong
+# 24h qua VẪN VÀO ĐƯỢC. Ở vòng quét ĐẦU TIÊN, soi lại CATCHUP_BARS nến gần nhất.
+# Chỉ nhận tín hiệu còn CHỜ KHỚP hoặc ĐANG MỞ — tín hiệu đã đóng rồi thì bỏ, để sổ Log
+# vẫn phản ánh đúng những lệnh người dùng thực sự vào được (không thêm lệnh nhờ nhìn lại).
+CATCHUP_BARS = int(os.getenv("CATCHUP_BARS", "6"))
 PB_ENTRY_ATR = float(os.getenv("PB_ENTRY_ATR", "1.0"))
 # Thoát theo thời gian: sau PB_TSTOP nến H4 kể từ khi khớp mà chưa lời được PB_TMFE R -> đóng ở giá đóng nến.
 # Đo ở cấp DANH MỤC: không có -> R/năm 341, sụt -150.7, lãi/sụt 2.26, Sharpe 1.28, giữ TB 13.1 ngày
@@ -1456,34 +1463,54 @@ def funding_ok(system: str, symbol: str, direction: str) -> bool:
     return fr * (1 if direction == "bullish" else -1) < 0
 
 
-async def scan_generic(system: str, symbol: str, timeframe: str, limit: int, check, sem: asyncio.Semaphore):
+def _pass_filters(system: str, symbol: str, sig: dict, quiet: bool = False) -> bool:
+    if strategy_enabled["ny"] and system in NY_SYSTEMS and (int(sig["entry_time"]) // 3600) % 24 not in NY_HOURS:
+        return False
+    if not funding_ok(system, symbol, sig["direction"]):
+        if not quiet:
+            log.info("Bỏ %s %s %s: funding %+.4f%% thuận chiều lệnh (đám đông cùng phía)",
+                     system, symbol, sig["direction"], funding_rates.get(symbol, 0.0) * 100)
+        return False
+    if not btc_trend_ok(system, sig["direction"], int(sig["entry_time"])):
+        if not quiet:
+            log.info("Bỏ %s %s %s: BTC %d ngày đi ngược chiều lệnh", system, symbol, sig["direction"], BTC_TREND_DAYS)
+        return False
+    return True
+
+
+async def scan_generic(system: str, symbol: str, timeframe: str, limit: int, check, sem: asyncio.Semaphore,
+                       back: int = 0) -> list[dict]:
+    """Trả về DANH SÁCH tín hiệu (cũ nhất trước). back > 0 = quét bù: soi thêm `back` nến đã đóng
+    trước đó, chỉ giữ tín hiệu còn CHỜ KHỚP / ĐANG MỞ."""
     async with sem:
         try:
             df = await fetch_ohlc(symbol, timeframe, limit)
         except Exception:
             log.warning("tải nến %s %s %s lỗi", system, symbol, timeframe, exc_info=True)
-            return
+            return []
     try:
         await update_open_signals(system, symbol, df)
     except Exception:
         # Trước đây lỗi ở đây thoát ra gather(return_exceptions=True) rồi bị lọc bỏ im lặng:
         # coin đó vừa không cập nhật lệnh đang mở, vừa không bao giờ sinh tín hiệu mới nữa.
         log.exception("cập nhật lệnh mở %s %s lỗi", system, symbol)
-    try:
-        sig = await asyncio.to_thread(check, symbol, df)
-    except Exception:
-        log.exception("check %s lỗi %s", system, symbol)
-        return
-    if sig and strategy_enabled["ny"] and system in NY_SYSTEMS and (int(sig["entry_time"]) // 3600) % 24 not in NY_HOURS:
-        return None
-    if sig and not funding_ok(system, symbol, sig["direction"]):
-        log.info("Bỏ %s %s %s: funding %+.4f%% thuận chiều lệnh (đám đông cùng phía)",
-                 system, symbol, sig["direction"], funding_rates.get(symbol, 0.0) * 100)
-        return None
-    if sig and not btc_trend_ok(system, sig["direction"], int(sig["entry_time"])):
-        log.info("Bỏ %s %s %s: BTC %d ngày đi ngược chiều lệnh", system, symbol, sig["direction"], BTC_TREND_DAYS)
-        return None
-    return sig
+    out = []
+    for k in range(back, -1, -1):                      # cũ nhất -> mới nhất
+        sub = df if k == 0 else df.iloc[:len(df) - k]
+        if len(sub) < 60:
+            continue
+        try:
+            sig = await asyncio.to_thread(check, symbol, sub)
+        except Exception:
+            if k == 0:
+                log.exception("check %s lỗi %s", system, symbol)
+            continue
+        if not sig or not _pass_filters(system, symbol, sig, quiet=k > 0):
+            continue
+        if k > 0 and sig.get("status") not in ("pending", "open"):
+            continue                                   # đã đóng rồi -> không bịa lệnh nhờ nhìn lại
+        out.append(sig)
+    return out
 
 
 async def emit_signal(system: str, symbol: str, sig: dict):
@@ -1505,6 +1532,7 @@ async def emit_signal(system: str, symbol: str, sig: dict):
 
 
 async def generic_loop(system: str, timeframe: str, limit: int, check, interval: int, pre=None, start_delay: int = 0):
+    first = True
     # start_delay: RẢI giờ khởi động. Nếu cả 6 vòng cùng bắn một lúc thì 6 x 63 coin x trọng số 10
     # vượt trần 2400 request/phút theo IP của Binance -> 429, vài coin bị bỏ qua ở lượt đầu,
     # và mọi yêu cầu vẽ chart của người dùng rơi vào đúng cụm tắc nghẽn đó.
@@ -1517,9 +1545,15 @@ async def generic_loop(system: str, timeframe: str, limit: int, check, interval:
             try:
                 if pre:
                     await pre()
-                res = await asyncio.gather(*(scan_generic(system, s, timeframe, limit, check, sem) for s in active_symbols),
+                back = CATCHUP_BARS if first else 0
+                res = await asyncio.gather(*(scan_generic(system, s, timeframe, limit, check, sem, back) for s in active_symbols),
                                            return_exceptions=True)
-                cands = [(s, r) for s, r in zip(active_symbols, res) if isinstance(r, dict)]
+                cands = [(s, r) for s, rs in zip(active_symbols, res) if isinstance(rs, list) for r in rs]
+                if first:
+                    first = False
+                    if back:
+                        log.info("%s: quét bù %d nến gần nhất -> %d tín hiệu còn vào được",
+                                 system, back, len(cands))
                 book = raw_signals.setdefault(system, {})
                 for s, r in cands:
                     book[(s, int(r["entry_time"]), r["direction"])] = int(r["entry_time"])
