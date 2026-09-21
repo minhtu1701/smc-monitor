@@ -103,7 +103,7 @@
       <button @click="toggleStrategy('ny')"
               class="text-xs px-2.5 py-1.5 rounded border border-line hover:border-muted transition"
               :class="strategy.ny ? 'text-gold' : 'text-muted'"
-              title="Chỉ nhận tín hiệu PB/ST (và BO 1.5/ST 1.5) khi nến H4 đóng lúc 16:00 hoặc 20:00 UTC (23h, 3h giờ VN — phiên New York). BO H4 không dùng lọc này.">
+              title="Chỉ nhận tín hiệu PB/ST/ST 1.5 khi nến H4 đóng lúc 16:00 hoặc 20:00 UTC (23h và 3h giờ VN). BO, VC, SNR, Coin mới KHÔNG dùng lọc này. ĐÃ ĐO: tắt lọc này làm lãi/sụt danh mục 12,45 → 4,09 — lợi nhuận chỉ tăng 6% nhưng sụt giảm gấp ba. Lệnh ngoài giờ NY không lỗ, chỉ yếu (PB +0,70R trong giờ so với +0,10R ngoài giờ) nhưng đông hơn nên kéo cả danh mục xuống. Khuyên để BẬT.">
         {{ strategy.ny ? '🗽 Chỉ NY on' : '🗽 Chỉ NY off' }}
       </button>
       <button @click="toggleStrategy('zone')"

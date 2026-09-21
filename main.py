@@ -386,6 +386,10 @@ def save_strategy_state():
         # Sổ đếm đồng thuận cũng phải sống qua restart: nếu không, sau mỗi lần watchdog bật lại
         # server thì book rỗng và lệnh BO bị chặn oan cho tới khi gom đủ 24h tín hiệu mới.
         data["__raw__"] = [[sysname, s, int(t), d] for sysname, bk in raw_signals.items() for (s, t, d) in bk]
+        # Các CÔNG TẮC bật/tắt cũng phải sống qua restart. Trước đây không lưu, nên mỗi lần
+        # server khởi động lại là mọi lựa chọn của người dùng bị xoá về mặc định — người dùng
+        # tắt "Chỉ NY" xong thấy nó tự bật lại, tưởng app lỗi.
+        data["__enabled__"] = dict(strategy_enabled)
         # Ghi nguyên tử: write_text cắt file về 0 byte TRƯỚC khi ghi, nên nếu watchdog kill
         # server đúng lúc đó thì file JSON hỏng -> mất sạch lệnh đang mở và lịch sử lời/lỗ.
         tmp = STRATEGY_STATE_FILE.with_suffix(STRATEGY_STATE_FILE.suffix + ".tmp")
@@ -405,6 +409,12 @@ def load_strategy_state():
                 raw_signals.setdefault(sysname, {})[(s, int(t), d)] = int(t)
         except Exception:
             log.exception("Bỏ qua sổ đồng thuận hỏng")
+        try:
+            for k, v in (data.get("__enabled__") or {}).items():
+                if k in strategy_enabled and isinstance(v, bool):
+                    strategy_enabled[k] = v
+        except Exception:
+            log.exception("Bỏ qua trạng thái công tắc hỏng")
         for k, v in data.items():
             if k not in strategy_signals:
                 continue
@@ -1966,6 +1976,7 @@ async def lifespan(app: FastAPI):
 
     log.info("Theo dõi %d symbols × %s | Telegram: %s", len(active_symbols), TIMEFRAMES,
              "ON" if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID else "OFF")
+    log.info("Công tắc: %s", ", ".join(f"{k}={'on' if v else 'OFF'}" for k, v in strategy_enabled.items()))
     tasks = [asyncio.create_task(scanner_loop()),
              asyncio.create_task(kline_relay_loop()), asyncio.create_task(volwatch_loop()), asyncio.create_task(news_loop()), asyncio.create_task(feed_loop()),
              asyncio.create_task(zone_loop()),
@@ -2041,6 +2052,7 @@ async def toggle_strategy(system: str = Query(...), enabled: bool = Query(...)):
     if system not in strategy_enabled:
         raise HTTPException(400, f"system không hợp lệ: {system}")
     strategy_enabled[system] = enabled
+    save_strategy_state()                     # lưu ngay, không đợi tín hiệu kế tiếp
     log.info("Strategy %s: %s", system, "ON" if enabled else "OFF")
     await manager.broadcast({"type": "status", "data": status_payload()})
     return {"system": system, "enabled": enabled}
