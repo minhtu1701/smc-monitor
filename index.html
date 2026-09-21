@@ -589,7 +589,9 @@ createApp({
         return { r: (r >= 0 ? '+' : '') + r.toFixed(2) + 'R', pct: pct == null ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%', cls: r >= 0 ? 'text-up' : 'text-down', title: 'Đã đóng' };
       }
       if (s.status === 'expired') return s.tp_passed
-        ? { r: '—', pct: 'quá TP', cls: 'text-muted', title: 'Giá đã đi hết quãng tới TP mà limit chưa khớp — lệnh bị huỷ để giải phóng coin cho setup mới.' }
+        ? { r: '—', pct: 'quá TP', cls: 'text-muted', title: 'Giá đã đi hết quãng tới TP mà limit chưa khớp — huỷ để giải phóng coin cho setup mới.' }
+        : s.drift
+        ? { r: '—', pct: 'trôi xa', cls: 'text-muted', title: 'Giá đã trôi quá 3 ATR khỏi mức limit — đo được xác suất còn khớp chỉ ~5%, nên huỷ để giải phóng coin.' }
         : { r: '—', pct: 'không khớp', cls: 'text-muted', title: 'Lệnh limit hết hạn, không vào lệnh' };
       const px = s.symbol === symbol.value && lastPrice.value != null ? lastPrice.value : s.mark;
       if (px == null || !risk) return { r: '…', pct: '', cls: 'text-muted', title: 'Chờ lượt quét kế tiếp để có giá' };
@@ -686,7 +688,7 @@ createApp({
     }
     // Lệnh còn CHỜ KHỚP nhưng giá đã từng chạm TP: vẫn giữ lệnh (đo được: huỷ chúng làm
     // danh mục 12,80 -> 12,67 và mất 49R/5 năm), nhưng hiển thị khác để không nhầm là còn vào được.
-    const statusLabel = (s) => (s.tp_passed ? 'QUÁ TP'
+    const statusLabel = (s) => (s.tp_passed ? 'QUÁ TP' : s.drift ? 'TRÔI XA'
       : ({ win: 'LỜI', loss: 'LỖ', pending: 'CHỜ KHỚP', expired: 'HẾT HẠN' }[s.status] || 'ĐANG MỞ'));
     const tradeR = (s) => (s.r != null ? s.r : s.status === 'win' ? s.rr : -1);
     const fmtR = (s) => { const r = tradeR(s); return (r > 0 ? '+' : '') + (Math.round(r * 10) / 10); };
@@ -1267,7 +1269,11 @@ createApp({
           const g = msg.data;
           pushNotif({ kind: 'strategy', tone: g.direction === 'bullish' ? 'up' : 'down',
                       title: `${sysName(g.system)} · ${g.symbol} · ${g.direction === 'bullish' ? '▲ MUA' : '▼ BÁN'} · ${statusLabel(g)}`,
-                      body: `${g.order === 'limit' ? 'Limit' : 'Entry'} ${fmtPrice(g.entry)} · SL ${fmtPrice(g.sl)} · TP ${g.tp ? fmtPrice(g.tp) : '—'} · RR 1:${g.rr ?? '—'}`,
+                      // Thời gian của thông báo là lúc app PHÁT HIỆN, không phải lúc setup hình thành.
+                      // Sau mỗi lần restart, quét bù dựng lại tín hiệu cũ nên mọi thứ trông như vừa mới.
+                      // Ghi kèm giờ ĐẶT LỆNH để phân biệt tín hiệu mới với tín hiệu được quét bù.
+                      body: `${g.order === 'limit' ? 'Limit' : 'Entry'} ${fmtPrice(g.entry)} · SL ${fmtPrice(g.sl)} · TP ${g.tp ? fmtPrice(g.tp) : '—'} · RR 1:${g.rr ?? '—'}` +
+                            (g.entry_time ? ` · đặt ${fmtDate(g.entry_time)}` : ''),
                       ref: { type: 'strategy', id: g.id } });
         } else if (msg.type === 'feed_item') {
           const it = msg.data;

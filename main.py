@@ -186,6 +186,19 @@ CONFLUENCE_H = int(os.getenv("CONFLUENCE_H", "48"))
 # Chỉ nhận tín hiệu còn CHỜ KHỚP hoặc ĐANG MỞ — tín hiệu đã đóng rồi thì bỏ, để sổ Log
 # vẫn phản ánh đúng những lệnh người dùng thực sự vào được (không thêm lệnh nhờ nhìn lại).
 CATCHUP_BARS = int(os.getenv("CATCHUP_BARS", "6"))
+# Quét bù dựng lại tín hiệu CŨ, nên lúc tạo giá có thể đã chạy rất xa mức limit — lệnh vẫn
+# "hợp lệ" nhưng thực tế không bao giờ khớp, chỉ làm rác danh sách và khoá coin.
+# Đo trên 20.183 ngày-chờ-khớp của SNR, xác suất CÒN khớp theo khoảng cách tới limit:
+#   0-1 ATR 73,4% | 1-2 ATR 36,9% | 2-3 ATR 17,9% | 3-5 ATR 5,1% | 5-8 ATR 1,0% | >8 ATR 0,0%
+# -> quét bù bỏ qua lệnh đã cách hơn LIMIT_MAX_DRIFT_ATR. Không ảnh hưởng tín hiệu sinh BÌNH THƯỜNG
+# (lúc nến vừa đóng giá luôn sát mức), nên không đụng gì tới kết quả backtest.
+# Dùng CHUNG một ngưỡng cho hai chỗ: quét bù không dựng lại lệnh đã quá xa, VÀ lệnh chờ
+# đang sống mà giá trôi quá xa thì huỷ luôn để thả coin ra cho setup mới.
+# Đo ở cấp danh mục (mô hình khoá coin đúng như live): không huỷ 12,47 | >6 ATR 12,47 |
+# >4 ATR 12,46 | >3 ATR 12,50 | >2 ATR 12,48. Chênh lệch nằm trong nhiễu — chọn 3 ATR vì
+# nhỉnh nhất ở tổng R (+630 so với +620) và rổ kiểm định (+0,605 so với +0,584), và vì nó
+# giữ danh sách sạch. Đây là quyết định về TÍNH DÙNG ĐƯỢC, không phải về lợi thế.
+LIMIT_MAX_DRIFT_ATR = float(os.getenv("LIMIT_MAX_DRIFT_ATR", "3.0"))
 PB_ENTRY_ATR = float(os.getenv("PB_ENTRY_ATR", "1.0"))
 # Thoát theo thời gian: sau PB_TSTOP nến H4 kể từ khi khớp mà chưa lời được PB_TMFE R -> đóng ở giá đóng nến.
 # Đo ở cấp DANH MỤC: không có -> R/năm 341, sụt -150.7, lãi/sụt 2.26, Sharpe 1.28, giữ TB 13.1 ngày
@@ -1458,6 +1471,17 @@ async def update_open_signals(system: str, symbol: str, df: pd.DataFrame):
                     save_strategy_state()
                     await manager.broadcast({"type": "strategy_update", "data": sig})
                 continue
+            if status == "pending":
+                try:
+                    hh, ll, cc = (df[k].astype(float).to_numpy() for k in ("high", "low", "close"))
+                    aa = float(wilder_atr(hh, ll, cc)[-1])
+                except Exception:
+                    aa = 0.0
+                if aa > 0 and abs(float(cc[-1]) - sig["entry"]) / aa > LIMIT_MAX_DRIFT_ATR:
+                    sig.update(status="expired", drift=True, closed_at=int(time.time()))
+                    save_strategy_state()
+                    await manager.broadcast({"type": "strategy_update", "data": sig})
+                    continue
             if status != sig["status"] or fill_time != sig.get("fill_time"):
                 if status in ("win", "loss") and exit_price is not None:
                     sig["r"] = round((exit_price - sig["entry"]) * (1 if bull else -1) / abs(sig["entry"] - sig["sl"]), 3)
@@ -1569,6 +1593,14 @@ def _still_pending(sig: dict, df: pd.DataFrame) -> bool:
     if sig.get("order") != "limit":
         return False                      # vào lệnh thị trường: không thể bù, giá vào đã trôi
     bull = sig["direction"] == "bullish"
+    # Giá đã chạy quá xa mức limit thì lệnh gần như không còn cơ hội khớp (xem LIMIT_MAX_DRIFT_ATR)
+    try:
+        h, l, c = (df[k].astype(float).to_numpy() for k in ("high", "low", "close"))
+        a = float(wilder_atr(h, l, c)[-1])
+        if a > 0 and abs(float(c[-1]) - sig["entry"]) / a > LIMIT_MAX_DRIFT_ATR:
+            return False
+    except Exception:
+        log.exception("quét bù: đo khoảng cách %s lỗi", sig.get("id"))
     try:
         status, *_ = resolve_limit(df, sig["entry_time"], sig["entry"], sig["sl"], sig["tp"], bull,
                                    sig["expires_at"], sig.get("tstop", 0), sig.get("tmfe", 0.0),
