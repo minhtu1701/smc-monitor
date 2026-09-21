@@ -917,6 +917,20 @@ def resolve_limit(df: pd.DataFrame, placed: int, limit: float, sl: float, tp: fl
     return "open", fill, None, None
 
 
+def tp_passed_while_pending(df: pd.DataFrame, placed: int, tp: float, bull: bool) -> bool:
+    """Giá đã TỪNG chạm TP trong lúc lệnh vẫn đang chờ khớp chưa?
+
+    Phải xét cả quá khứ chứ không so giá HIỆN TẠI với TP: giá có thể vọt qua TP rồi tụt lại
+    (NEARUSDT: chạm 4.44 rồi về 4.28 trong khi TP là 4.4076), lúc đó so giá hiện tại sẽ bỏ sót.
+    Khi điều này xảy ra thì tiền đề của setup đã mất — đo trên 1.395 lệnh SNR: chỉ 4 lệnh (0,3%)
+    khớp SAU khi giá chạm TP. Không đổi logic vào lệnh, chỉ để giao diện thôi báo "còn vào được".
+    """
+    sub = df[df["ts"] >= placed]
+    if sub.empty:
+        return False
+    return bool((sub["high"] >= tp).any()) if bull else bool((sub["low"] <= tp).any())
+
+
 def limit_signal(system: str, symbol: str, h4: pd.DataFrame, placed: int, bull: bool, limit: float, sl: float, rr: float, kind: str,
                  tstop: int = 0, tmfe: float = 0.0, tf: str = "4h", exp_bars: int = 0, hold: int = 0,
                  max_risk: float = 0.12) -> dict | None:
@@ -1418,6 +1432,11 @@ async def update_open_signals(system: str, symbol: str, df: pd.DataFrame):
                                                                      sig.get("tstop", 0), sig.get("tmfe", 0.0),
                                                                      sig.get("tf_sec") or TF_SECONDS.get(sig["timeframe"], TF_SECONDS["4h"]),
                                                                      sig.get("hold_limit", 0), sig.get("fill_time"))
+            passed = status == "pending" and tp_passed_while_pending(df, sig["entry_time"], sig["tp"], bull)
+            if passed != bool(sig.get("tp_passed")):
+                sig["tp_passed"] = passed
+                save_strategy_state()
+                await manager.broadcast({"type": "strategy_update", "data": sig})
             if status != sig["status"] or fill_time != sig.get("fill_time"):
                 if status in ("win", "loss") and exit_price is not None:
                     sig["r"] = round((exit_price - sig["entry"]) * (1 if bull else -1) / abs(sig["entry"] - sig["sl"]), 3)

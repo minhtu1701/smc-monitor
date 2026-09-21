@@ -597,7 +597,7 @@ createApp({
         // gần như chắc chắn chỉ còn chờ hết hạn. Đo trên 1.395 lệnh SNR đã khớp: chỉ 4 lệnh
         // (0,3%) khớp SAU khi giá chạm TP, nên không đáng đổi logic — chỉ cần nói rõ ở giao diện
         // để không nhầm đây là lệnh còn vào được.
-        if (s.tp != null && (bull > 0 ? px >= s.tp : px <= s.tp)) {
+        if (s.tp_passed || (s.tp != null && (bull > 0 ? px >= s.tp : px <= s.tp))) {
           return { r: 'quá TP', pct: 'cách ' + Math.abs(d).toFixed(2) + '%', cls: 'text-muted',
                    title: 'Giá đã chạy hết quãng tới TP mà limit chưa khớp — setup coi như mất, chỉ còn chờ hết hạn. Đo: chỉ 0,3% lệnh khớp sau tình huống này.' };
         }
