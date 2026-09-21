@@ -940,6 +940,16 @@ def resolve_limit(df: pd.DataFrame, placed: int, limit: float, sl: float, tp: fl
     return "open", fill, None, None
 
 
+def limit_drift_atr(df: pd.DataFrame, entry: float) -> float:
+    """Giá đã trôi bao nhiêu ATR khỏi mức limit, đo trên nến ĐÃ ĐÓNG gần nhất."""
+    d = df.iloc[:-1]
+    if len(d) < 20:
+        return 0.0
+    h, l, c = (d[k].astype(float).to_numpy() for k in ("high", "low", "close"))
+    a = float(wilder_atr(h, l, c)[-1])
+    return abs(float(c[-1]) - entry) / a if a > 0 else 0.0
+
+
 def tp_passed_while_pending(df: pd.DataFrame, placed: int, tp: float, bull: bool) -> int | None:
     """Giá đã TỪNG chạm TP trong lúc lệnh vẫn đang chờ khớp chưa?
 
@@ -1473,11 +1483,10 @@ async def update_open_signals(system: str, symbol: str, df: pd.DataFrame):
                 continue
             if status == "pending":
                 try:
-                    hh, ll, cc = (df[k].astype(float).to_numpy() for k in ("high", "low", "close"))
-                    aa = float(wilder_atr(hh, ll, cc)[-1])
+                    drift = limit_drift_atr(df, sig["entry"])
                 except Exception:
-                    aa = 0.0
-                if aa > 0 and abs(float(cc[-1]) - sig["entry"]) / aa > LIMIT_MAX_DRIFT_ATR:
+                    drift = 0.0
+                if drift > LIMIT_MAX_DRIFT_ATR:
                     sig.update(status="expired", drift=True, closed_at=int(time.time()))
                     save_strategy_state()
                     await manager.broadcast({"type": "strategy_update", "data": sig})
@@ -1594,10 +1603,11 @@ def _still_pending(sig: dict, df: pd.DataFrame) -> bool:
         return False                      # vào lệnh thị trường: không thể bù, giá vào đã trôi
     bull = sig["direction"] == "bullish"
     # Giá đã chạy quá xa mức limit thì lệnh gần như không còn cơ hội khớp (xem LIMIT_MAX_DRIFT_ATR)
+    # Đo bằng nến ĐÃ ĐÓNG, KHÔNG dùng giá trong phiên. Backtest đo ở giá đóng nến ngày;
+    # nếu live đo bằng giá realtime thì nó huỷ sớm hơn hẳn cái đã kiểm chứng (đã gặp:
+    # ZAMAUSDT 3,82 ATR theo giá trong phiên nhưng chỉ 2,40 ATR theo giá đóng nến -> huỷ oan).
     try:
-        h, l, c = (df[k].astype(float).to_numpy() for k in ("high", "low", "close"))
-        a = float(wilder_atr(h, l, c)[-1])
-        if a > 0 and abs(float(c[-1]) - sig["entry"]) / a > LIMIT_MAX_DRIFT_ATR:
+        if limit_drift_atr(df, sig["entry"]) > LIMIT_MAX_DRIFT_ATR:
             return False
     except Exception:
         log.exception("quét bù: đo khoảng cách %s lỗi", sig.get("id"))
