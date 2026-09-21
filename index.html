@@ -814,56 +814,106 @@ createApp({
       candleSeries.setMarkers(markers);
     }
 
+    // Bộ nhớ đệm chart theo (coin, khung). Đổi khung thì VẼ NGAY từ đệm rồi mới tải lại ở nền.
+    // An toàn: nến đang chạy luôn được /ws sửa lại trong ~2s, và cấu trúc CHoCH/BoS chỉ đổi khi
+    // có nến ĐÓNG — nên hạn dùng đệm đặt đúng bằng 1 nến của khung đó.
+    const TF_SECONDS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+    const klineCache = new Map();          // "SYM|tf" -> { data, at }
+    const klineInflight = new Map();       // gộp các request trùng đang bay
+    const ckey = (sym, tf) => `${sym}|${tf}`;
+    const cacheTtl = (tf) => Math.min(Math.max(TF_SECONDS[tf] || 900, 60), 1800) * 1000;
+
+    function cachedKlines(sym, tf) {
+      const e = klineCache.get(ckey(sym, tf));
+      return e && Date.now() - e.at < cacheTtl(tf) ? e.data : null;
+    }
+
     async function fetchKlines(sym = symbol.value, tf = timeframe.value) {
-      const r = await fetch(`/api/klines?symbol=${encodeURIComponent(sym)}&timeframe=${tf}&limit=500`, { cache: 'no-store' });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || r.statusText);
-      return data;
+      const k = ckey(sym, tf);
+      if (klineInflight.has(k)) return klineInflight.get(k);
+      const p = (async () => {
+        const r = await fetch(`/api/klines?symbol=${encodeURIComponent(sym)}&timeframe=${tf}&limit=500`, { cache: 'no-store' });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || r.statusText);
+        klineCache.set(k, { data, at: Date.now() });
+        if (klineCache.size > 48) klineCache.delete(klineCache.keys().next().value);
+        return data;
+      })();
+      klineInflight.set(k, p);
+      p.catch(() => {}).then(() => klineInflight.delete(k));
+      return p;
+    }
+
+    // Tải trước các khung còn lại của CÙNG coin, giãn ra để không giành băng thông với chart đang xem.
+    let prefetchTimer = null;
+    function prefetchOtherTfs(sym) {
+      clearTimeout(prefetchTimer);
+      prefetchTimer = setTimeout(async () => {
+        for (const t of chartTimeframes) {
+          if (sym !== symbol.value) return;
+          if (cachedKlines(sym, t) || klineInflight.has(ckey(sym, t))) continue;
+          try { await fetchKlines(sym, t); } catch {}
+          await new Promise((r) => setTimeout(r, 350));
+        }
+      }, 700);
     }
     // Chỉ áp dữ liệu nếu đúng coin + khung đang chọn (chặn response/luồng live của coin cũ đè lên chart)
     const isCurrent = (sym, tf) => sym === symbol.value && tf === timeframe.value;
 
+    function applyKlines(d, { focusTime = null, keepView = false } = {}) {
+      const last = d.candles.at(-1)?.close ?? 1;
+      const precision = pricePrecision(last);
+      candleSeries.applyOptions({ priceFormat: { type: 'price', precision, minMove: 1 / 10 ** precision } });
+      candleSeries.setData(d.candles);
+      drawStructure(d.events, d.signals);
+      // Kéo tay trục giá ở coin trước có thể đã tắt autoScale — luôn bật lại khi đổi coin/timeframe
+      chart.priceScale('right').applyOptions({ autoScale: true });
+      lastPrice.value = d.candles.at(-1)?.close ?? null;
+      lastKlineTime = d.candles.at(-1)?.time ?? null;
+      priceDir.value = 0;
+
+      // keepView: bản tải mới đè lên bản vẽ từ đệm — giữ nguyên khung nhìn người dùng đang xem
+      if (!keepView) {
+        const n = d.candles.length;
+        const idx = focusTime ? d.candles.findIndex((c) => c.time >= focusTime) : -1;
+        if (idx >= 0) chart.timeScale().setVisibleLogicalRange({ from: idx - 100, to: idx + 30 });
+        else chart.timeScale().setVisibleLogicalRange({ from: n - 160, to: n + 8 });
+      }
+      sendWatch();
+
+      // Đường Entry/SL/TP là mức giá cố định, không phụ thuộc timeframe — giữ nguyên khi đổi
+      // timeframe trên CÙNG coin, chỉ xoá khi chuyển sang coin khác.
+      const sig = selectedStrategyId.value ? findStrategySignal(selectedStrategyId.value) : null;
+      if (sig && sig.symbol === symbol.value) drawStrategyLines(sig);
+      else { clearStrategyLines(); selectedStrategyId.value = null; }
+      const za = selectedZoneId.value ? zoneAlerts.value.find((x) => x.id === selectedZoneId.value) : null;
+      if (za && za.symbol === symbol.value) drawZone(za);
+      else { clearZoneLines(); selectedZoneId.value = null; }
+    }
+
     async function loadChart({ focusTime = null } = {}) {
       const seq = ++loadSeq;
       const sym = symbol.value, tf = timeframe.value;
-      loading.value = true;
       chartError.value = '';
-      lastKlineTime = null; // chặn nến live cho tới khi dữ liệu mới đã được nạp
+      lastKlineTime = null; // chặn nến live cho tới khi có dữ liệu (từ đệm hoặc từ mạng)
       sendWatch();
+      const cached = cachedKlines(sym, tf);
+      if (cached) applyKlines(cached, { focusTime });   // vẽ NGAY, không có vòng xoay chờ
+      loading.value = !cached;
       try {
         const d = await fetchKlines(sym, tf);
         if (seq !== loadSeq || !isCurrent(sym, tf) || d.symbol !== sym || d.timeframe !== tf) return; // đã chuyển coin/khung trong lúc chờ
-        const last = d.candles.at(-1)?.close ?? 1;
-        const precision = pricePrecision(last);
-        candleSeries.applyOptions({ priceFormat: { type: 'price', precision, minMove: 1 / 10 ** precision } });
-        candleSeries.setData(d.candles);
-        drawStructure(d.events, d.signals);
-        // Kéo tay trục giá ở coin trước có thể đã tắt autoScale — luôn bật lại khi đổi coin/timeframe
-        chart.priceScale('right').applyOptions({ autoScale: true });
-        lastPrice.value = d.candles.at(-1)?.close ?? null;
-        lastKlineTime = d.candles.at(-1)?.time ?? null;
-        priceDir.value = 0;
-
-        const n = d.candles.length;
-        let idx = focusTime ? d.candles.findIndex((c) => c.time >= focusTime) : -1;
-        if (idx >= 0) chart.timeScale().setVisibleLogicalRange({ from: idx - 100, to: idx + 30 });
-        else chart.timeScale().setVisibleLogicalRange({ from: n - 160, to: n + 8 });
-
-        sendWatch();
-
-        // Đường Entry/SL/TP là mức giá cố định, không phụ thuộc timeframe — giữ nguyên khi đổi
-        // timeframe trên CÙNG coin, chỉ xoá khi chuyển sang coin khác.
-        const sig = selectedStrategyId.value ? findStrategySignal(selectedStrategyId.value) : null;
-        if (sig && sig.symbol === symbol.value) drawStrategyLines(sig);
-        else { clearStrategyLines(); selectedStrategyId.value = null; }
-        const za = selectedZoneId.value ? zoneAlerts.value.find((x) => x.id === selectedZoneId.value) : null;
-        if (za && za.symbol === symbol.value) drawZone(za);
-        else { clearZoneLines(); selectedZoneId.value = null; }
+        // Không vẽ lại nếu bản mới y hệt bản từ đệm — tránh nháy chart vô ích
+        const same = cached && cached.candles.length === d.candles.length
+          && cached.candles.at(-1)?.time === d.candles.at(-1)?.time
+          && cached.candles.at(-1)?.close === d.candles.at(-1)?.close;
+        if (!same) applyKlines(d, { focusTime, keepView: !!cached });
       } catch (e) {
-        if (seq === loadSeq) chartError.value = `Lỗi tải chart: ${e.message}`;
+        if (seq === loadSeq && !cached) chartError.value = `Lỗi tải chart: ${e.message}`;
       } finally {
         if (seq === loadSeq) loading.value = false;
       }
+      if (seq === loadSeq) prefetchOtherTfs(sym);
     }
 
     // Làm mới CHoCH/BoS khi 1 nến đóng (không đụng tới view hiện tại)

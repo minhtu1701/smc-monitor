@@ -1504,7 +1504,12 @@ async def emit_signal(system: str, symbol: str, sig: dict):
         await manager.broadcast({"type": "strategy_signal", "data": sig})
 
 
-async def generic_loop(system: str, timeframe: str, limit: int, check, interval: int, pre=None):
+async def generic_loop(system: str, timeframe: str, limit: int, check, interval: int, pre=None, start_delay: int = 0):
+    # start_delay: RẢI giờ khởi động. Nếu cả 6 vòng cùng bắn một lúc thì 6 x 63 coin x trọng số 10
+    # vượt trần 2400 request/phút theo IP của Binance -> 429, vài coin bị bỏ qua ở lượt đầu,
+    # và mọi yêu cầu vẽ chart của người dùng rơi vào đúng cụm tắc nghẽn đó.
+    if start_delay:
+        await asyncio.sleep(start_delay)
     sem = asyncio.Semaphore(CONCURRENCY)
     while True:
         t0 = time.time()
@@ -1840,12 +1845,12 @@ async def lifespan(app: FastAPI):
     tasks = [asyncio.create_task(scanner_loop()),
              asyncio.create_task(kline_relay_loop()), asyncio.create_task(volwatch_loop()), asyncio.create_task(news_loop()), asyncio.create_task(feed_loop()),
              asyncio.create_task(zone_loop()),
-             asyncio.create_task(generic_loop("pb4h", "4h", 600, check_pb_signal, PB_INTERVAL)),
-             asyncio.create_task(generic_loop("bo4h", "4h", 600, check_bo_signal, BO_INTERVAL, pre=refresh_btc_regime)),
-             asyncio.create_task(generic_loop("st4h", "4h", 600, check_st_signal, ST_INTERVAL, pre=refresh_btc_regime)),
-             asyncio.create_task(generic_loop("vc4h", "4h", 300, check_vc_signal, ST_INTERVAL)),
-             asyncio.create_task(generic_loop("st15", "4h", 600, partial(check_st_signal, rr=ST15_RR, system="st15"), ST_INTERVAL, pre=refresh_btc_regime)),
-             asyncio.create_task(generic_loop("snr1d", "1d", 400, check_snr_signal, SNR_INTERVAL)),
+             asyncio.create_task(generic_loop("pb4h", "4h", 600, check_pb_signal, PB_INTERVAL, start_delay=0)),
+             asyncio.create_task(generic_loop("bo4h", "4h", 600, check_bo_signal, BO_INTERVAL, pre=refresh_btc_regime, start_delay=40)),
+             asyncio.create_task(generic_loop("st4h", "4h", 600, check_st_signal, ST_INTERVAL, pre=refresh_btc_regime, start_delay=80)),
+             asyncio.create_task(generic_loop("vc4h", "4h", 300, check_vc_signal, ST_INTERVAL, start_delay=120)),
+             asyncio.create_task(generic_loop("st15", "4h", 600, partial(check_st_signal, rr=ST15_RR, system="st15"), ST_INTERVAL, pre=refresh_btc_regime, start_delay=160)),
+             asyncio.create_task(generic_loop("snr1d", "1d", 400, check_snr_signal, SNR_INTERVAL, start_delay=200)),
              asyncio.create_task(newlisting_loop()),
              asyncio.create_task(funding_loop())]
     yield
@@ -1927,7 +1932,10 @@ async def get_klines(
         raise HTTPException(400, f"Timeframe không hỗ trợ: {timeframe}")
     symbol = symbol.upper()
     try:
-        df = await fetch_ohlc(symbol, timeframe, limit)
+        # Dùng instance ccxt RIÊNG: `exchange` là hàng đợi chung của scanner + 6 vòng quét chiến lược
+        # (63 coin mỗi vòng). enableRateLimit xếp hàng theo TỪNG instance, nên yêu cầu vẽ chart của
+        # người dùng phải đợi hết loạt quét đang chạy. Đo thực tế: 0.47s khi rảnh, 2.1-2.4s khi đang quét.
+        df = await fetch_ohlc(symbol, timeframe, limit, ex=kline_exchange)
     except (ValueError, ccxt.BadSymbol) as e:
         raise HTTPException(404, str(e))
     except ccxt.BaseError as e:
