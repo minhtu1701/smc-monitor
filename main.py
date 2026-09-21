@@ -146,7 +146,13 @@ NL_DAY = int(os.getenv("NL_DAY", "5"))           # vào ở giá đóng ngày th
 NL_SL_ADR = float(os.getenv("NL_SL_ADR", "2.0"))  # SL = 2 x biên độ ngày trung bình của 6 ngày đầu
 NL_RR = float(os.getenv("NL_RR", "1.0"))
 NL_HOLD_D = int(os.getenv("NL_HOLD_D", "60"))
-NL_LATE_D = int(os.getenv("NL_LATE_D", "2"))      # cho phép vào trễ tối đa 2 ngày (phòng server nghỉ)
+# Vào trễ (phòng server nghỉ): nếu phát hiện muộn thì vào ở giá ĐÓNG ngày gần nhất chứ KHÔNG
+# phải giá đóng ngày thứ NL_DAY — ghi giá cũ là ghi một lệnh người dùng không thể vào được,
+# và tới 5% số lệnh đó đã chạy xong ngay lúc tạo. Đo trên 474 lần niêm yết (vào ở giá đóng
+# ngày phát hiện, SL/TP vẫn tính từ biên độ 6 ngày đầu):
+#   đúng ngày 5: E +0.153R (t=3.52) | trễ 1 ngày: +0.125R (t=2.88) | trễ 2 ngày: +0.073R (t=1.67)
+# -> cho phép trễ 1 ngày, bỏ ngày thứ 2 vì đã mất ý nghĩa thống kê.
+NL_LATE_D = int(os.getenv("NL_LATE_D", "1"))
 NL_INTERVAL = int(os.getenv("NL_INTERVAL", "1800"))
 SNR_INTERVAL = int(os.getenv("SNR_INTERVAL", "900"))
 # ── Lọc funding ngược đám đông ──
@@ -1216,9 +1222,11 @@ def check_nl_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
     d = d1.iloc[:-1].reset_index(drop=True)              # bỏ nến ngày đang chạy
     if not (NL_DAY + 1 <= len(d) <= NL_DAY + 1 + NL_LATE_D):
         return None                                       # chưa đủ tuổi, hoặc đã quá muộn
-    i = NL_DAY
+    i = len(d) - 1               # ngày ĐÃ ĐÓNG gần nhất = giá thực sự vào được lúc này
     h, l, c = (d[k].astype(float).to_numpy() for k in ("high", "low", "close"))
-    adr = float(np.mean((h[:i + 1] - l[:i + 1]) / np.maximum(c[:i + 1], 1e-12)))
+    # biên độ ngày luôn lấy từ NL_DAY+1 ngày ĐẦU, không kéo theo ngày vào trễ — giữ đúng
+    # định nghĩa đã backtest, chỉ giá vào là cập nhật theo thực tế.
+    adr = float(np.mean((h[:NL_DAY + 1] - l[:NL_DAY + 1]) / np.maximum(c[:NL_DAY + 1], 1e-12)))
     entry = float(c[i])
     risk = NL_SL_ADR * adr * entry
     if not (entry > 0 and 0.01 <= risk / entry <= 0.60):
@@ -1232,7 +1240,9 @@ def check_nl_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
         st = "win" if r > 0 else "loss"
     return {
         "id": f"nl1d-{symbol}-{entry_time}-S", "system": "nl1d", "symbol": symbol, "timeframe": "1d",
-        "direction": "bearish", "zone_kind": f"Coin mới niêm yết {NL_DAY} ngày · biên độ ngày {adr*100:.0f}%",
+        "direction": "bearish",
+        "zone_kind": (f"Coin mới niêm yết {NL_DAY} ngày · biên độ ngày {adr*100:.0f}%"
+                      + (f" · vào trễ {i - NL_DAY} ngày" if i > NL_DAY else "")),
         "entry": entry, "sl": sl, "tp": tp, "rr": NL_RR, "entry_time": entry_time,
         "hold_bars": NL_HOLD_D, "detected_at": int(time.time()), "status": st, "r": r,
         "closed_at": int(time.time()) if st != "open" else None,
@@ -1265,6 +1275,10 @@ async def newlisting_loop():
                         log.exception("nl1d: cập nhật lệnh mở %s lỗi", sym)
                     if sym not in fresh:
                         continue
+                    if any(x["symbol"] == sym for x in strategy_signals["nl1d"]):
+                        continue   # mỗi lần niêm yết chỉ vào MỘT lệnh. Không có dòng này thì khi
+                                   # lệnh ngày 5 đóng sớm (1.7% số lần), nhánh vào trễ sẽ tạo thêm
+                                   # lệnh thứ hai trên cùng một coin.
                     try:
                         sig = check_nl_signal(sym, d1)
                     except Exception:
@@ -1478,6 +1492,28 @@ def _pass_filters(system: str, symbol: str, sig: dict, quiet: bool = False) -> b
     return True
 
 
+def _still_pending(sig: dict, df: pd.DataFrame) -> bool:
+    """Tín hiệu quét bù có CÒN chờ khớp tính tới nến MỚI NHẤT không?
+
+    Không được hỏi `sig["status"]`: tín hiệu đó sinh ra từ khung dữ liệu đã CẮT BỚT (để mô phỏng
+    thời điểm quá khứ), nên trạng thái của nó chỉ phản ánh lúc đó. Một lệnh limit đặt 5 ngày trước
+    "đang chờ khớp" trong khung cắt vẫn có thể đã khớp và chạm TP từ lâu — đưa vào sổ thì thành
+    lệnh thắng mà người dùng chưa bao giờ vào được (đã gặp: GUSDT +8R làm win rate hiện 100%).
+    Phải giải lại bằng TOÀN BỘ dữ liệu."""
+    if sig.get("order") != "limit":
+        return False                      # vào lệnh thị trường: không thể bù, giá vào đã trôi
+    bull = sig["direction"] == "bullish"
+    try:
+        status, *_ = resolve_limit(df, sig["entry_time"], sig["entry"], sig["sl"], sig["tp"], bull,
+                                   sig["expires_at"], sig.get("tstop", 0), sig.get("tmfe", 0.0),
+                                   sig.get("tf_sec") or TF_SECONDS.get(sig["timeframe"], TF_SECONDS["4h"]),
+                                   sig.get("hold_limit", 0))
+    except Exception:
+        log.exception("quét bù: giải lại %s lỗi", sig.get("id"))
+        return False
+    return status == "pending"
+
+
 async def scan_generic(system: str, symbol: str, timeframe: str, limit: int, check, sem: asyncio.Semaphore,
                        back: int = 0) -> list[dict]:
     """Trả về DANH SÁCH tín hiệu (cũ nhất trước). back > 0 = quét bù: soi thêm `back` nến đã đóng
@@ -1507,8 +1543,13 @@ async def scan_generic(system: str, symbol: str, timeframe: str, limit: int, che
             continue
         if not sig or not _pass_filters(system, symbol, sig, quiet=k > 0):
             continue
-        if k > 0 and sig.get("status") not in ("pending", "open"):
-            continue                                   # đã đóng rồi -> không bịa lệnh nhờ nhìn lại
+        # Lệnh quét bù đã khớp trong lúc server tắt là lệnh người dùng KHÔNG vào được -> không
+        # được ghi vào sổ (sẽ làm hỏng thành tích thật). NHƯNG vẫn phải trả về để sổ ĐỒNG THUẬN
+        # của BO đếm đủ: bộ lọc đồng thuận hỏi "bao nhiêu coin khác cùng ra tín hiệu", không
+        # liên quan tới việc lệnh đó có khớp hay không. Vứt chúng đi thì sau mỗi lần server nghỉ
+        # dài, tín hiệu BO đầu tiên bị chặn oan vì đếm thiếu.
+        if k > 0 and not _still_pending(sig, df):
+            sig["stale"] = True
         out.append(sig)
     return out
 
@@ -1552,8 +1593,10 @@ async def generic_loop(system: str, timeframe: str, limit: int, check, interval:
                 if first:
                     first = False
                     if back:
-                        log.info("%s: quét bù %d nến gần nhất -> %d tín hiệu còn vào được",
-                                 system, back, len(cands))
+                        live = sum(1 for _, r in cands if not r.get("stale"))
+                        log.info("%s: quét bù %d nến gần nhất -> %d tín hiệu, %d còn vào được "
+                                 "(%d đã khớp lúc server tắt, chỉ dùng để đếm đồng thuận)",
+                                 system, back, len(cands), live, len(cands) - live)
                 book = raw_signals.setdefault(system, {})
                 for s, r in cands:
                     book[(s, int(r["entry_time"]), r["direction"])] = int(r["entry_time"])
@@ -1561,6 +1604,8 @@ async def generic_loop(system: str, timeframe: str, limit: int, check, interval:
                 for k in [k for k, v in book.items() if v < cutoff]:
                     del book[k]
                 for s, r in cands:
+                    if r.get("stale"):
+                        continue                      # chỉ dùng để đếm đồng thuận, không phát
                     if system in CONSENSUS_SYSTEMS:
                         t = int(r["entry_time"])
                         n = sum(1 for (s2, t2, d2) in book if s2 != s and d2 == r["direction"] and t - CONSENSUS_WINDOW < t2 <= t)
