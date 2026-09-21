@@ -588,7 +588,9 @@ createApp({
         const pct = px ? (px - s.entry) / s.entry * bull * 100 : null;
         return { r: (r >= 0 ? '+' : '') + r.toFixed(2) + 'R', pct: pct == null ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%', cls: r >= 0 ? 'text-up' : 'text-down', title: 'Đã đóng' };
       }
-      if (s.status === 'expired') return { r: '—', pct: 'không khớp', cls: 'text-muted', title: 'Lệnh limit hết hạn, không vào lệnh' };
+      if (s.status === 'expired') return s.tp_passed
+        ? { r: '—', pct: 'quá TP', cls: 'text-muted', title: 'Giá đã đi hết quãng tới TP mà limit chưa khớp — lệnh bị huỷ để giải phóng coin cho setup mới.' }
+        : { r: '—', pct: 'không khớp', cls: 'text-muted', title: 'Lệnh limit hết hạn, không vào lệnh' };
       const px = s.symbol === symbol.value && lastPrice.value != null ? lastPrice.value : s.mark;
       if (px == null || !risk) return { r: '…', pct: '', cls: 'text-muted', title: 'Chờ lượt quét kế tiếp để có giá' };
       if (s.status === 'pending') {
@@ -597,7 +599,7 @@ createApp({
         // gần như chắc chắn chỉ còn chờ hết hạn. Đo trên 1.395 lệnh SNR đã khớp: chỉ 4 lệnh
         // (0,3%) khớp SAU khi giá chạm TP, nên không đáng đổi logic — chỉ cần nói rõ ở giao diện
         // để không nhầm đây là lệnh còn vào được.
-        if (s.tp_passed || (s.tp != null && (bull > 0 ? px >= s.tp : px <= s.tp))) {
+        if (s.tp != null && (bull > 0 ? px >= s.tp : px <= s.tp)) {
           return { r: 'quá TP', pct: 'cách ' + Math.abs(d).toFixed(2) + '%', cls: 'text-muted',
                    title: 'Giá đã chạy hết quãng tới TP mà limit chưa khớp — setup coi như mất, chỉ còn chờ hết hạn. Đo: chỉ 0,3% lệnh khớp sau tình huống này.' };
         }
@@ -684,7 +686,7 @@ createApp({
     }
     // Lệnh còn CHỜ KHỚP nhưng giá đã từng chạm TP: vẫn giữ lệnh (đo được: huỷ chúng làm
     // danh mục 12,80 -> 12,67 và mất 49R/5 năm), nhưng hiển thị khác để không nhầm là còn vào được.
-    const statusLabel = (s) => (s.status === 'pending' && s.tp_passed ? 'QUÁ TP'
+    const statusLabel = (s) => (s.tp_passed ? 'QUÁ TP'
       : ({ win: 'LỜI', loss: 'LỖ', pending: 'CHỜ KHỚP', expired: 'HẾT HẠN' }[s.status] || 'ĐANG MỞ'));
     const tradeR = (s) => (s.r != null ? s.r : s.status === 'win' ? s.rr : -1);
     const fmtR = (s) => { const r = tradeR(s); return (r > 0 ? '+' : '') + (Math.round(r * 10) / 10); };

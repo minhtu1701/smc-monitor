@@ -927,7 +927,7 @@ def resolve_limit(df: pd.DataFrame, placed: int, limit: float, sl: float, tp: fl
     return "open", fill, None, None
 
 
-def tp_passed_while_pending(df: pd.DataFrame, placed: int, tp: float, bull: bool) -> bool:
+def tp_passed_while_pending(df: pd.DataFrame, placed: int, tp: float, bull: bool) -> int | None:
     """Giá đã TỪNG chạm TP trong lúc lệnh vẫn đang chờ khớp chưa?
 
     Phải xét cả quá khứ chứ không so giá HIỆN TẠI với TP: giá có thể vọt qua TP rồi tụt lại
@@ -937,8 +937,9 @@ def tp_passed_while_pending(df: pd.DataFrame, placed: int, tp: float, bull: bool
     """
     sub = df[df["ts"] >= placed]
     if sub.empty:
-        return False
-    return bool((sub["high"] >= tp).any()) if bull else bool((sub["low"] <= tp).any())
+        return None
+    hit = sub[sub["high"] >= tp] if bull else sub[sub["low"] <= tp]
+    return int(hit["ts"].iloc[0]) if len(hit) else None
 
 
 def limit_signal(system: str, symbol: str, h4: pd.DataFrame, placed: int, bull: bool, limit: float, sl: float, rr: float, kind: str,
@@ -1442,11 +1443,21 @@ async def update_open_signals(system: str, symbol: str, df: pd.DataFrame):
                                                                      sig.get("tstop", 0), sig.get("tmfe", 0.0),
                                                                      sig.get("tf_sec") or TF_SECONDS.get(sig["timeframe"], TF_SECONDS["4h"]),
                                                                      sig.get("hold_limit", 0), sig.get("fill_time"))
-            passed = status == "pending" and tp_passed_while_pending(df, sig["entry_time"], sig["tp"], bull)
-            if passed != bool(sig.get("tp_passed")):
-                sig["tp_passed"] = passed
-                save_strategy_state()
-                await manager.broadcast({"type": "strategy_update", "data": sig})
+            hit = tp_passed_while_pending(df, sig["entry_time"], sig["tp"], bull) if status == "pending" else None
+            if hit is not None:
+                # Giá đã đi hết quãng tới TP mà limit chưa khớp -> tiền đề của setup mất.
+                # HUỶ luôn thay vì để nó khoá coin tới hết hạn 20 ngày. Đo trên 1.722 tín hiệu SNR
+                # với mô hình khoá ĐÚNG NHƯ LIVE (lệnh chờ chặn tín hiệu mới trên cùng coin):
+                #   giữ lệnh chờ: 1.318 lệnh, E +0.461R, R/năm 915, lãi/sụt 12.44, holdout +0.570
+                #   huỷ khi chạm TP: 1.321 lệnh, E +0.469R, R/năm 918, lãi/sụt 12.47, holdout +0.584
+                # Nhỉnh hơn ở hầu hết thước đo, và quan trọng hơn: coin được giải phóng sớm cho
+                # setup mới. Chỉ 4/1.395 lệnh từng khớp SAU khi chạm TP nên gần như không mất gì.
+                if sig["status"] != "expired":
+                    sig.update(status="expired", tp_passed=True, exit_time=hit,
+                               closed_at=int(time.time()))
+                    save_strategy_state()
+                    await manager.broadcast({"type": "strategy_update", "data": sig})
+                continue
             if status != sig["status"] or fill_time != sig.get("fill_time"):
                 if status in ("win", "loss") and exit_price is not None:
                     sig["r"] = round((exit_price - sig["entry"]) * (1 if bull else -1) / abs(sig["entry"] - sig["sl"]), 3)
