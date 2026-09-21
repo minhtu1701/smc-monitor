@@ -464,7 +464,7 @@
                 ⭐ đồng thuận {{ s.confluence + 1 }}
               </span>
               <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide"
-                    :class="s.status === 'win' ? 'bg-up/15 text-up' : s.status === 'loss' ? 'bg-down/15 text-down' : s.status === 'expired' ? 'bg-line text-muted' : s.status === 'pending' ? 'bg-sky-500/15 text-sky-300' : 'bg-gold/15 text-gold'">
+                    :class="s.status === 'win' ? 'bg-up/15 text-up' : s.status === 'loss' ? 'bg-down/15 text-down' : s.status === 'expired' ? 'bg-line text-muted' : (s.status === 'pending' && s.tp_passed) ? 'bg-line text-muted' : s.status === 'pending' ? 'bg-sky-500/15 text-sky-300' : 'bg-gold/15 text-gold'">
                 {{ statusLabel(s) }}
               </span>
             </div>
@@ -682,7 +682,10 @@ createApp({
         x.onclick = () => { window.focus(); notifOpen.value = true; x.close(); };
       } catch {}
     }
-    const statusLabel = (s) => ({ win: 'LỜI', loss: 'LỖ', pending: 'CHỜ KHỚP', expired: 'HẾT HẠN' }[s.status] || 'ĐANG MỞ');
+    // Lệnh còn CHỜ KHỚP nhưng giá đã từng chạm TP: vẫn giữ lệnh (đo được: huỷ chúng làm
+    // danh mục 12,80 -> 12,67 và mất 49R/5 năm), nhưng hiển thị khác để không nhầm là còn vào được.
+    const statusLabel = (s) => (s.status === 'pending' && s.tp_passed ? 'QUÁ TP'
+      : ({ win: 'LỜI', loss: 'LỖ', pending: 'CHỜ KHỚP', expired: 'HẾT HẠN' }[s.status] || 'ĐANG MỞ'));
     const tradeR = (s) => (s.r != null ? s.r : s.status === 'win' ? s.rr : -1);
     const fmtR = (s) => { const r = tradeR(s); return (r > 0 ? '+' : '') + (Math.round(r * 10) / 10); };
     function calcStats(list) {
