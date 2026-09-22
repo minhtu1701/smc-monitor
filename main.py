@@ -53,14 +53,22 @@ except ImportError:
 
 from smartmoneyconcepts import smc
 from fvg_filter import find_valid_fvgs
+import sweep_pattern
+import amd_pattern
+import xau_pdb
 
 # ─────────────────────────── Config (.env) ───────────────────────────
 SYMBOLS = [s.strip().upper() for s in os.getenv(
     "SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,DOGEUSDT,ADAUSDT,LINKUSDT"
 ).split(",") if s.strip()]
 TIMEFRAMES = [t.strip() for t in os.getenv("TIMEFRAMES", "15m,1h").split(",") if t.strip()]
+# Cảnh báo mẫu hình "quét nhịp nhỏ" (sweep_pattern.py) — chỉ để người dùng tự quyết, KHÔNG có lợi thế đo được.
+# Cửa sổ CANDLE_LIMIT=500 đã kiểm: kích hoạt giống hệt khi chạy trên toàn bộ lịch sử.
+SWEEP_TFS = [t.strip() for t in os.getenv("SWEEP_TFS", "5m,15m").split(",") if t.strip()]
 SWING_LENGTH = int(os.getenv("SWING_LENGTH", "10"))     # độ dài swing cho smc.swing_highs_lows
-CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "500"))    # số nến tải mỗi lần quét
+# Số nến tải mỗi lần quét Alerts. 499 chứ KHÔNG 500: trọng số Binance nhảy bậc ≤499 -> 2, 500–1000 -> 5, và mọi
+# vòng quét dùng chung một kết nối ccxt trần 1200 đơn vị/phút. Với 119 mã, 500 nến làm một lượt Alerts mất ~6 phút.
+CANDLE_LIMIT = int(os.getenv("CANDLE_LIMIT", "499"))
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "60"))   # giây giữa 2 lần quét
 KLINE_POLL_INTERVAL = float(os.getenv("KLINE_POLL_INTERVAL", "2"))  # giây giữa 2 lần đẩy nến live qua /ws
 FRESH_BARS = int(os.getenv("FRESH_BARS", "2"))          # chỉ báo tín hiệu có BoS trong N nến đóng gần nhất
@@ -251,6 +259,10 @@ BO_TSTOP = int(os.getenv("BO_TSTOP", "12"))
 # win 67%, +0.33R/lệnh (train +0.34 / holdout +0.32, coin lớn +0.28 / alt +0.34, dương 6/6 năm, t=3.7); bán ngẫu nhiên cùng thoát chỉ +0.02R.
 VC_TP_ATR = float(os.getenv("VC_TP_ATR", "1.5"))
 VC_SL_ATR = float(os.getenv("VC_SL_ATR", "1.5"))
+# AMD H4 (amd_pattern.py): KHÔNG đạt kiểm định (t=1,95 < 2,5; vào ngẫu nhiên cùng SL/TP đã +0,104R; thêm vào danh
+# mục làm lãi/sụt 4,74 -> 4,65). Người dùng yêu cầu chạy để tự theo dõi thành tích live (22/09/2026).
+AMD_RR = float(os.getenv("AMD_RR", "2.0"))
+AMD_HOLD = int(os.getenv("AMD_HOLD", "192"))   # 192 nến H4 = 32 ngày, y hệt backtest
 VC_HOLD = int(os.getenv("VC_HOLD", "30"))   # 30 nến H4 = 5 ngày. Đo ở cấp danh mục: giữ 18 -> lãi/sụt 6.24, giữ 30 -> 7.04, giữ 48 -> 7.08 (chọn 30, đã vào vùng bằng phẳng)
 VC_VOLX = float(os.getenv("VC_VOLX", "3.0"))
 # Lọc chỉ báo thêm (thử RSI/BB/MACD/Stoch/ADX trên chính các lệnh của hệ thống, train 40 coin + holdout 58 coin):
@@ -346,7 +358,7 @@ active_symbols: list[str] = list(SYMBOLS)
 history: deque = deque(maxlen=200)   # tín hiệu gần nhất (mới nhất đứng đầu)
 seen: set[str] = set()               # chống gửi trùng
 status = {"last_scan": None, "duration": None, "scans": 0}
-STRATEGY_SYSTEMS = ("pb4h", "bo4h", "st4h", "st15", "news", "vc4h", "snr1d", "nl1d")
+STRATEGY_SYSTEMS = ("pb4h", "bo4h", "st4h", "st15", "news", "vc4h", "snr1d", "nl1d", "amd4h", "xaupdb")
 strategy_enabled: dict = {**{k: True for k in STRATEGY_SYSTEMS}, "zone": True, "ny": True}  # "zone" = cảnh báo vùng HTF (không phải chiến lược vào lệnh)
 # "ny" = chỉ nhận tín hiệu khi nến H4 đóng lúc 16:00/20:00 UTC (phiên New York). Backtest 98 coin: PB +0.22R -> +0.46R, BO +0.25R -> +0.35R, ST +0.24R -> +0.34R.
 # BO H4 không dùng lọc NY: nghiên cứu bối cảnh cho thấy lọc giờ làm BO xấu đi (lãi/sụt giảm 1.19 -> 0.68); BO dùng lọc sức mạnh tương đối thay thế.
@@ -774,6 +786,16 @@ def format_telegram(sig: dict) -> str:
     bull = sig["direction"] == "bullish"
     ts = datetime.fromtimestamp(sig["bos_time"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     test = " [TEST]" if sig.get("test") else ""
+    if sig.get("kind") == "sweep":
+        return (
+            f"{'🟢' if bull else '🔴'} <b>{sig['direction'].upper()} · Quét nhịp nhỏ</b> (chỉ theo dõi)\n"
+            f"<b>{sig['symbol']}</b> · {sig['timeframe']} · Binance Futures\n\n"
+            f"Mức bị quét: <code>{fmt_price(sig['swept'])}</code>\n"
+            f"SL gợi ý:    <code>{fmt_price(sig['sl'])}</code>\n"
+            f"Close:       <code>{fmt_price(sig['price'])}</code>\n"
+            f"🕒 {ts}\n"
+            f'<a href="https://www.binance.com/en/futures/{sig["symbol"]}">Mở trên Binance</a>'
+        )
     return (
         f"{'🟢' if bull else '🔴'} <b>{sig['direction'].upper()} · CHoCH + BoS</b>{test}\n"
         f"<b>{sig['symbol']}</b> · {sig['timeframe']} · Binance Futures\n\n"
@@ -820,17 +842,47 @@ async def scan_symbol(symbol: str, timeframe: str, sem: asyncio.Semaphore):
     closed = df.iloc[:-1].reset_index(drop=True)  # bỏ nến đang chạy -> tránh repaint
     if len(closed) < SWING_LENGTH * 3:
         return
+    last_idx = len(closed) - 1
+    if timeframe in SWEEP_TFS:
+        try:
+            await scan_sweep(symbol, timeframe, closed, last_idx)
+        except Exception:
+            log.exception("Quét nhịp nhỏ %s %s lỗi", symbol, timeframe)
+    if timeframe not in TIMEFRAMES:
+        return
     try:
         events = await asyncio.to_thread(analyze, closed)
     except Exception:
         log.exception("Analyze %s %s lỗi", symbol, timeframe)
         return
 
-    last_idx = len(closed) - 1
     for choch, bos in find_signals(events):
         if bos["broken_idx"] <= last_idx - FRESH_BARS:   # tín hiệu cũ
             continue
         sig = build_signal(symbol, timeframe, choch, bos, closed)
+        if sig["id"] in seen:
+            continue
+        seen.add(sig["id"])
+        await emit_signal(sig)
+
+
+async def scan_sweep(symbol: str, timeframe: str, closed: pd.DataFrame, last_idx: int):
+    o, h, l, c = (closed[k].astype(float).to_numpy() for k in ("open", "high", "low", "close"))
+    hits = await asyncio.to_thread(sweep_pattern.detect, o, h, l, c, sweep_pattern.wilder_atr(h, l, c))
+    ts = closed["ts"].to_numpy()
+    for x in hits:
+        if x["i"] <= last_idx - FRESH_BARS:
+            continue
+        t = int(ts[x["i"]])
+        sig = {
+            "id": f"{symbol}-{timeframe}-sweep-{t}-{x['dir']}", "kind": "sweep",
+            "symbol": symbol, "timeframe": timeframe,
+            "direction": "bullish" if x["dir"] > 0 else "bearish",
+            "choch_level": x["choch_level"], "choch_time": int(ts[x["choch_i"]]),
+            "bos_level": x["bos_level"], "bos_time": t,       # bos_time = nến kích hoạt (chart cuộn tới đây)
+            "swept": x["swept"], "origin": x["origin"], "sl": x["sl"],
+            "price": x["entry"], "detected_at": int(time.time()),
+        }
         if sig["id"] in seen:
             continue
         seen.add(sig["id"])
@@ -843,7 +895,7 @@ async def scanner_loop():
         t0 = time.time()
         try:
             await asyncio.gather(
-                *(scan_symbol(s, tf, sem) for s in active_symbols for tf in TIMEFRAMES),
+                *(scan_symbol(s, tf, sem) for s in active_symbols for tf in dict.fromkeys(TIMEFRAMES + SWEEP_TFS)),
                 return_exceptions=True,
             )
             status.update(last_scan=int(time.time()), duration=round(time.time() - t0, 2),
@@ -1204,6 +1256,38 @@ def check_vc_signal(symbol: str, h4: pd.DataFrame) -> dict | None:
     }
 
 
+def check_amd_signal(symbol: str, h4: pd.DataFrame) -> dict | None:
+    """AMD: vùng tích luỹ -> quét biên (thao túng) -> LH rồi đóng qua biên đối diện (BOS) ở nến H4 VỪA ĐÓNG.
+    Vào lệnh ở giá đóng, SL sau cực trị cú quét, TP AMD_RR x rủi ro, tự đóng sau AMD_HOLD nến. Xem amd_pattern.py."""
+    d = h4.iloc[:-1].reset_index(drop=True)
+    if len(d) < 120:
+        return None
+    o, h, l, c = (d[k].astype(float).to_numpy() for k in ("open", "high", "low", "close"))
+    last = len(d) - 1
+    hits = [x for x in amd_pattern.detect(o, h, l, c, wilder_atr(h, l, c)) if x["i"] == last]
+    if not hits:
+        return None
+    x = hits[-1]
+    bull = x["dir"] > 0
+    entry, sl = x["entry"], x["sl"]
+    risk = abs(entry - sl)
+    tp = entry + AMD_RR * risk if bull else entry - AMD_RR * risk
+    entry_time = int(d["ts"].iloc[last]) + TF_SECONDS["4h"]
+    status, exit_time, exit_price = resolve_time(h4, entry_time, sl, tp, bull, AMD_HOLD, TF_SECONDS["4h"])
+    r = None
+    if status in ("win", "loss", "time"):
+        r = round((exit_price - entry) * (1 if bull else -1) / risk, 3)
+        status = "win" if r > 0 else "loss"
+    return {
+        "id": f"amd4h-{symbol}-{entry_time}-{'L' if bull else 'S'}", "system": "amd4h", "symbol": symbol, "timeframe": "4h",
+        "direction": "bullish" if bull else "bearish",
+        "zone_kind": f"AMD: vùng {x['range_low']:.6g}–{x['range_high']:.6g}, quét {x['sweep']:.6g} · chưa đạt kiểm định",
+        "entry": entry, "sl": sl, "tp": tp, "rr": AMD_RR, "entry_time": entry_time, "hold_bars": AMD_HOLD,
+        "detected_at": int(time.time()), "status": status, "r": r,
+        "closed_at": int(time.time()) if status != "open" else None, "exit_time": exit_time, "exit_price": exit_price,
+    }
+
+
 def check_snr_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
     """Malaysian SNR khung ngày. Chỉ trả tín hiệu khi nến ngày VỪA ĐÓNG là nến phá vỡ làm mức đổi vai trò
     (kháng cự thành hỗ trợ hoặc ngược lại) -> đặt LIMIT tại mức đó, chờ giá quay lại trong SNR_EXP_D ngày.
@@ -1322,6 +1406,50 @@ def check_nl_signal(symbol: str, d1: pd.DataFrame) -> dict | None:
         "closed_at": int(time.time()) if st != "open" else None,
         "exit_time": exit_time, "exit_price": exit_price,
     }
+
+
+XAU_SYMBOL = "XAUUSDT"
+
+
+async def xau_loop():
+    """Vàng — phá đỉnh/đáy hôm trước (xau_pdb.py). Vòng riêng vì cần CÙNG LÚC nến 5m (bắt khoảnh khắc phá) và nến ngày
+    (đỉnh/đáy hôm trước, EMA20 ngày, trung vị biên độ 20 ngày). Chỉ xét nến 5m vừa đóng -> restart không dựng lại lệnh cũ
+    (vào market, giá đã trôi). 999 nến 5m (~3,5 ngày) đủ phủ trần giữ lệnh 3 ngày khi theo dõi lệnh đang mở."""
+    await asyncio.sleep(90)
+    while True:
+        try:
+            has_open = any(s["status"] in ("open", "pending") for s in strategy_signals["xaupdb"])
+            if strategy_enabled["xaupdb"] or has_open:
+                df5 = await fetch_ohlc(XAU_SYMBOL, "5m", 999)
+                await update_open_signals("xaupdb", XAU_SYMBOL, df5)
+                if strategy_enabled["xaupdb"]:
+                    df1 = await fetch_ohlc(XAU_SYMBOL, "1d", 200)
+                    d5 = df5.iloc[:-1].reset_index(drop=True)
+                    r = xau_pdb.check(d5, df1.iloc[:-1].reset_index(drop=True))
+                    if r:
+                        d, entry, sl, tp = r
+                        bull = d > 0
+                        t_close = int(d5["ts"].iloc[-1]) + TF_SECONDS["5m"]
+                        hold = xau_pdb.HOLD_H * 3600 // TF_SECONDS["5m"]
+                        st, exit_time, exit_price = resolve_time(df5, t_close, sl, tp, bull, hold, TF_SECONDS["5m"])
+                        rr = None
+                        if st in ("win", "loss", "time"):
+                            rr = round((exit_price - entry) * d / abs(entry - sl), 3)
+                            st = "win" if rr > 0 else "loss"
+                        await emit_signal("xaupdb", XAU_SYMBOL, {
+                            "id": f"xaupdb-{XAU_SYMBOL}-{t_close}-{'L' if bull else 'S'}", "system": "xaupdb",
+                            "symbol": XAU_SYMBOL, "timeframe": "5m", "direction": "bullish" if bull else "bearish",
+                            "zone_kind": f"Phá {'đỉnh' if bull else 'đáy'} hôm qua · SL {abs(entry - sl):.1f} / TP {abs(tp - entry):.1f} giá (0,3 ATR ngày)",
+                            "entry": entry, "sl": sl, "tp": tp, "rr": xau_pdb.RR, "entry_time": t_close,
+                            "hold_bars": hold, "detected_at": int(time.time()), "status": st, "r": rr,
+                            "closed_at": int(time.time()) if st != "open" else None,
+                            "exit_time": exit_time, "exit_price": exit_price,
+                        })
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("xaupdb loop lỗi")
+        await asyncio.sleep(60)
 
 
 async def newlisting_loop():
@@ -1680,6 +1808,19 @@ async def emit_signal(system: str, symbol: str, sig: dict):
         await manager.broadcast({"type": "strategy_signal", "data": sig})
 
 
+async def track_open_signals(system: str, symbols, timeframe: str, limit: int, sem: asyncio.Semaphore):
+    """Cập nhật lệnh đang mở / chờ khớp cho các coin KHÔNG được quét tín hiệu mới."""
+    for s in symbols:
+        try:
+            async with sem:
+                df = await fetch_ohlc(s, timeframe, limit)
+            await update_open_signals(system, s, df)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("%s cập nhật lệnh mở lỗi %s", system, s)
+
+
 async def generic_loop(system: str, timeframe: str, limit: int, check, interval: int, pre=None, start_delay: int = 0):
     first = True
     # start_delay: RẢI giờ khởi động. Nếu cả 6 vòng cùng bắn một lúc thì 6 x 63 coin x trọng số 10
@@ -1726,21 +1867,20 @@ async def generic_loop(system: str, timeframe: str, limit: int, check, interval:
                         r["consensus"] = n
                         r["zone_kind"] = f'{r.get("zone_kind", "")} · đồng thuận {n + 1} coin'
                     await emit_signal(system, s, r)
+                # Coin đã bị BỎ khỏi danh sách quét nhưng còn lệnh đang mở / chờ khớp: scan_generic chỉ chạy
+                # cho active_symbols nên các lệnh này không bao giờ được cập nhật nữa và kẹt ở "đang mở"
+                # mãi trong sổ Log. Vẫn theo dõi chúng tới khi đóng.
+                orphans = {x["symbol"] for x in strategy_signals[system]
+                           if x["status"] in ("open", "pending")} - set(active_symbols)
+                await track_open_signals(system, orphans, timeframe, limit, sem)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("%s loop lỗi", system)
         else:
             # hệ thống đã tắt: không tìm tín hiệu mới nhưng vẫn theo dõi các lệnh đang mở / chờ khớp tới khi đóng
-            for s in {x["symbol"] for x in strategy_signals[system] if x["status"] in ("open", "pending")}:
-                try:
-                    async with sem:
-                        df = await fetch_ohlc(s, timeframe, limit)
-                    await update_open_signals(system, s, df)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.exception("%s cập nhật lệnh mở lỗi %s", system, s)
+            await track_open_signals(system, {x["symbol"] for x in strategy_signals[system]
+                                              if x["status"] in ("open", "pending")}, timeframe, limit, sem)
         await asyncio.sleep(max(30.0, interval - (time.time() - t0)))
 
 
@@ -1964,7 +2104,7 @@ async def zone_emit(alert: dict, ids: list[str], cooldown_key=None):
 async def zone_scan_symbol(symbol: str, tf: str, sem: asyncio.Semaphore):
     async with sem:
         try:
-            df = await fetch_ohlc(symbol, tf, 500)
+            df = await fetch_ohlc(symbol, tf, 499)   # 499: bậc trọng số 2 thay vì 5, xem CANDLE_LIMIT
         except Exception:
             return
     if tf == "1d":
@@ -2037,9 +2177,11 @@ async def lifespan(app: FastAPI):
              asyncio.create_task(generic_loop("bo4h", "4h", SCAN_BARS_H4, check_bo_signal, BO_INTERVAL, pre=refresh_btc_regime, start_delay=40)),
              asyncio.create_task(generic_loop("st4h", "4h", SCAN_BARS_H4, check_st_signal, ST_INTERVAL, pre=refresh_btc_regime, start_delay=80)),
              asyncio.create_task(generic_loop("vc4h", "4h", 300, check_vc_signal, ST_INTERVAL, start_delay=120)),
+             asyncio.create_task(generic_loop("amd4h", "4h", SCAN_BARS_H4, check_amd_signal, ST_INTERVAL, start_delay=200)),
              asyncio.create_task(generic_loop("st15", "4h", SCAN_BARS_H4, partial(check_st_signal, rr=ST15_RR, system="st15"), ST_INTERVAL, pre=refresh_btc_regime, start_delay=160)),
              asyncio.create_task(generic_loop("snr1d", "1d", 400, check_snr_signal, SNR_INTERVAL, start_delay=200)),
              asyncio.create_task(newlisting_loop()),
+             asyncio.create_task(xau_loop()),
              asyncio.create_task(funding_loop())]
     yield
     for task in tasks:
@@ -2095,7 +2237,7 @@ async def get_zone_alerts():
 async def get_strategy_signals(system: str = Query("pb4h")):
     if system not in strategy_signals:
         raise HTTPException(400, f"system không hợp lệ: {system}")
-    rr = {"pb4h": None if PB_EXIT == "trail" else PB_RR, "bo4h": BO_RR, "st4h": ST_RR, "st15": ST15_RR, "news": None, "vc4h": round(VC_TP_ATR / VC_SL_ATR, 2), "snr1d": SNR_RR, "nl1d": NL_RR}[system]
+    rr = {"pb4h": None if PB_EXIT == "trail" else PB_RR, "bo4h": BO_RR, "st4h": ST_RR, "st15": ST15_RR, "news": None, "vc4h": round(VC_TP_ATR / VC_SL_ATR, 2), "snr1d": SNR_RR, "nl1d": NL_RR, "amd4h": AMD_RR, "xaupdb": xau_pdb.RR}[system]
     return {"enabled": strategy_enabled[system], "rr": rr,
             "risk_w": SYSTEM_RISK.get(system, 1.0), "signals": list(strategy_signals[system])}
 
