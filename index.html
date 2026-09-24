@@ -54,6 +54,16 @@
       <span class="text-muted uppercase tracking-wider">{{ wsState }}</span>
     </div>
 
+    <div class="flex items-center gap-2 text-xs">
+      <span v-for="s in sessions" :key="s.name"
+            class="flex items-center gap-1 px-1.5 py-0.5 rounded font-mono num"
+            :class="s.isOpen ? 'bg-gold/15 text-gold' : 'bg-line text-muted'"
+            :title="s.name + ': ' + s.range + ' (' + s.vnRange + ')' + (s.isOpen ? ' — ĐANG MỞ, còn ' : ' — đóng, mở sau ') + Math.floor(s.mins/60) + 'h' + String(s.mins%60).padStart(2,'0') + (s.weekend ? '. Cuối tuần: chứng khoán và ngoại hối nghỉ, crypto vẫn chạy nhưng thanh khoản mỏng hơn.' : '')">
+        <span class="w-1.5 h-1.5 rounded-full" :class="s.isOpen ? 'bg-gold' : 'bg-muted/40'"></span>
+        <span class="font-sans">{{ s.name }}</span> {{ s.clock }}
+      </span>
+    </div>
+
     <div class="hidden md:flex items-center gap-4 text-xs text-muted">
       <span>Last scan: <span class="text-gray-300 font-mono">{{ status.last_scan ? fmtClock(status.last_scan) : '—' }}</span></span>
       <span v-if="status.duration != null">({{ status.duration }}s)</span>
@@ -305,7 +315,8 @@
         </div>
 
         <div v-else-if="rightTab === 'log'" class="mt-2 grid grid-cols-3 gap-2 text-xs">
-          <div v-for="(st, k) in logStats" :key="k" class="bg-panel2 rounded px-2 py-1.5">
+          <div v-for="(st, k) in logStats" :key="k" class="bg-panel2 rounded px-2 py-1.5"
+               title="Tổng R đã nhân cỡ lệnh của từng hệ (PB ×0,62 · BO ×1,07 · ST ×0,44 · ST15 ×1,21 · VC ×1,69 · SNR ×0,97)">
             <div class="text-muted capitalize">{{ k === 'all' ? 'Tất cả' : k }}</div>
             <div class="font-mono num font-semibold" :class="st.totalR > 0 ? 'text-up' : st.totalR < 0 ? 'text-down' : 'text-gray-300'">
               {{ st.totalR >= 0 ? '+' : '' }}{{ st.totalR.toFixed(1) }}R
@@ -446,13 +457,17 @@
               {{ logStats[strategyTab].totalR >= 0 ? '+' : '' }}{{ logStats[strategyTab].totalR.toFixed(1) }}R
             </span>
             <span class="text-muted">{{ strategySignals[strategyTab].filter((x) => x.status === 'open').length }} đang mở · {{ strategySignals[strategyTab].filter((x) => x.status === 'pending').length }} chờ khớp</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-line text-muted"
+                  title="Lệnh CHỜ KHỚP xếp lên đầu, trong đó đồng thuận cao đứng trước. Đo trên 11.693 lệnh/4,9 năm với trần 10 lệnh mở cùng lúc: chọn theo đồng thuận cho +117%/năm, chọn ngẫu nhiên +97%, lấy theo thứ tự đến trước chỉ +84%. Khi không đủ vốn ôm hết, lấy từ trên xuống.">
+              ⭐ xếp theo đồng thuận
+            </span>
             <span v-if="holdNote(strategyTab)" class="ml-auto px-1.5 py-0.5 rounded text-[10px] font-semibold"
                   :class="holdNote(strategyTab).slow ? 'bg-gold/15 text-gold' : 'bg-line text-muted'"
                   :title="'Thời gian giữ lệnh đo từ backtest 98 coin/5 năm: trung vị ' + holdNote(strategyTab).med + ', trung bình ' + holdNote(strategyTab).avg + ', 10% số lệnh kéo tới ' + holdNote(strategyTab).p90 + '. Tính khoảng vốn bị giữ theo con số trung bình, không phải trung vị.'">
               ⏱ giữ {{ holdNote(strategyTab).med }}<template v-if="holdNote(strategyTab).slow"> · TB {{ holdNote(strategyTab).avg }}</template>
             </span>
           </div>
-          <div v-if="!strategySignals[strategyTab].length" class="p-8 text-center text-sm text-muted">
+          <div v-if="!tabSignals.length" class="p-8 text-center text-sm text-muted">
             <div class="text-2xl mb-2">🎯</div>
             Chưa có tín hiệu {{ strategyTab }}.<br />
             <span class="text-xs">
@@ -469,7 +484,7 @@
             </span>
           </div>
 
-          <button v-for="s in strategySignals[strategyTab]" :key="s.id" @click="openStrategySignal(s)"
+          <button v-for="s in tabSignals" :key="s.id" @click="openStrategySignal(s)"
                   class="w-full text-left px-4 py-3 border-b border-line/70 hover:bg-panel2 transition border-l-2"
                   :class="[
                     selectedStrategyId === s.id ? 'bg-panel2' : '',
@@ -487,7 +502,7 @@
                     :title="'Có ' + s.confluence + ' hệ thống khác cũng báo coin này cùng chiều trong 48h qua. Backtest: nhóm có đồng thuận đạt +1.7 đến +2.0R mỗi lệnh so với +0.55R của nhóm còn lại — cân nhắc vào nặng tay hơn.'">
                 ⭐ đồng thuận {{ s.confluence + 1 }}
               </span>
-              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide"
+              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded font-semibold tracking-wide" :title="exitTitle(s)"
                     :class="s.status === 'win' ? 'bg-up/15 text-up' : s.status === 'loss' ? 'bg-down/15 text-down' : s.status === 'expired' ? 'bg-line text-muted' : (s.status === 'pending' && s.tp_passed) ? 'bg-line text-muted' : s.status === 'pending' ? 'bg-sky-500/15 text-sky-300' : 'bg-gold/15 text-gold'">
                 {{ statusLabel(s) }}
               </span>
@@ -495,9 +510,10 @@
             <div class="mt-1.5 grid grid-cols-5 gap-2 text-[11px]">
               <div><div class="text-muted">{{ s.order === 'limit' ? 'Limit' : 'Entry' }}</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.entry) }}</div></div>
               <div><div class="text-muted">{{ s.trail ? 'SL (trail)' : 'SL' }}</div><div class="font-mono num text-down">{{ fmtPrice(s.sl) }}</div></div>
-              <div><div class="text-muted">TP</div><div class="font-mono num text-up">{{ s.tp ? fmtPrice(s.tp) : '—' }}</div></div>
+              <div :title="tpNote(s)"><div class="text-muted">TP</div>
+                <div class="font-mono num" :class="tpOk(s) ? 'text-up' : 'text-muted'">{{ tpOk(s) ? fmtPrice(s.tp) : (s.tp == null ? '—' : 'không có') }}</div></div>
               <div v-if="s.risk_w"><div class="text-muted">Cỡ lệnh</div><div class="font-mono num text-amber-400">×{{ s.risk_w }}</div></div>
-              <div><div class="text-muted">{{ s.trail || s.hold_h ? 'Thoát' : 'RR' }}</div><div class="font-mono num text-gray-300">{{ s.trail ? 'Trail ' + s.trail + 'R' : s.hold_h ? 'sau ' + s.hold_h + 'h' : '1:' + s.rr }}</div></div>
+              <div><div class="text-muted">{{ s.trail || s.hold_h ? 'Thoát' : 'RR' }}</div><div class="font-mono num text-gray-300" :title="tpNote(s)">{{ s.trail ? 'Trail ' + s.trail + 'R' : s.hold_h ? 'sau ' + s.hold_h + 'h' : (tpOk(s) ? '1:' + s.rr : 'trần 1:' + (maxRR(s) ?? 0).toFixed(1)) }}</div></div>
               <div :title="pnl(s).title"><div class="text-muted">Lời/lỗ</div>
                 <div class="font-mono num font-semibold" :class="pnl(s).cls">{{ pnl(s).r }}</div>
                 <div class="font-mono num text-[10px]" :class="pnl(s).cls">{{ pnl(s).pct }}</div></div>
@@ -537,8 +553,9 @@
             <div class="mt-1.5 grid grid-cols-3 gap-2 text-[11px]">
               <div><div class="text-muted">Entry</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.entry) }}</div></div>
               <div><div class="text-muted">Exit</div><div class="font-mono num text-gray-300">{{ fmtPrice(s.exit_price) }}</div></div>
-              <div><div class="text-muted">Kết quả</div>
+              <div :title="exitTitle(s)"><div class="text-muted">Kết quả</div>
                 <div class="font-semibold" :class="s.status === 'win' ? 'text-up' : 'text-down'">{{ s.status === 'win' ? 'LỜI' : 'LỖ' }}</div>
+                <div v-if="exitKind(s)" class="text-[10px] text-muted">{{ exitKind(s) }}</div>
               </div>
             </div>
             <div class="mt-1 text-[10px] text-muted">Vào {{ fmtDate(entryTime(s)) }} · Đóng {{ fmtDate(s.exit_time ?? s.closed_at) }}<template v-if="heldFor(s)"> · giữ {{ heldFor(s) }}</template></div>
@@ -589,6 +606,17 @@ createApp({
         .filter((s) => s.status === 'win' || s.status === 'loss')
         .sort((a, b) => (b.exit_time ?? b.closed_at ?? 0) - (a.exit_time ?? a.closed_at ?? 0))
     );
+    // THỨ TỰ ƯU TIÊN khi vốn không ôm hết được lệnh. Đo trên 11.693 lệnh / 4,9 năm, trần 10 lệnh mở cùng lúc
+    // (đòn bẩy 2x): lấy lệnh có ĐỒNG THUẬN cao nhất cho +117%/năm, so với +97% nếu chọn ngẫu nhiên và chỉ +84%
+    // nếu lấy theo thứ tự đến trước — tức thứ tự CŨ của danh sách này còn tệ hơn rút thăm (p = 0,030; tốt hơn ở
+    // cả hai nửa thời gian và cả hai rổ coin). Chỉ dùng làm THỨ TỰ: lọc cứng theo đồng thuận thì không đơn điệu
+    // (n ≥ 0/1/2/3/5/8 cho +84/+102/+102/+95/+110/+73%) nên không bỏ lệnh nào, chỉ xếp xuống cuối hàng.
+    // Lệnh CHỜ KHỚP lên đầu vì đó là những lệnh còn vào được; đã mở rồi thì không còn phải chọn nữa.
+    const pickOrder = (s) => (s.status === 'pending' && !s.tp_passed && !s.drift ? 0 : s.status === 'open' ? 1 : 2);
+    const tabSignals = computed(() => [...(strategySignals[strategyTab.value] || [])].sort((a, b) =>
+      pickOrder(a) - pickOrder(b)
+      || (b.confluence ?? 0) - (a.confluence ?? 0)
+      || (b.detected_at ?? 0) - (a.detected_at ?? 0)));
     // Lệnh trailing có R thực tế (s.r); lệnh TP cố định thì +rr khi thắng, -1 khi thua.
     
     const volwatch = ref({ results: [] });
@@ -610,7 +638,7 @@ createApp({
         const r = tradeR(s);
         const px = s.exit_price ?? (s.status === 'win' ? s.tp : s.sl);
         const pct = px ? (px - s.entry) / s.entry * bull * 100 : null;
-        return { r: (r >= 0 ? '+' : '') + r.toFixed(2) + 'R', pct: pct == null ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%', cls: r >= 0 ? 'text-up' : 'text-down', title: 'Đã đóng' };
+        return { r: (r >= 0 ? '+' : '') + r.toFixed(2) + 'R', pct: pct == null ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%', cls: r >= 0 ? 'text-up' : 'text-down', title: 'Đã đóng' + (exitKind(s) ? ' · ' + exitKind(s) + ' — ' + exitTitle(s) : '') };
       }
       if (s.status === 'expired') return s.tp_passed
         ? { r: '—', pct: 'quá TP', cls: 'text-muted', title: 'Giá đã đi hết quãng tới TP mà limit chưa khớp — huỷ để giải phóng coin cho setup mới.' }
@@ -714,15 +742,47 @@ createApp({
     }
     // Lệnh còn CHỜ KHỚP nhưng giá đã từng chạm TP: vẫn giữ lệnh (đo được: huỷ chúng làm
     // danh mục 12,80 -> 12,67 và mất 49R/5 năm), nhưng hiển thị khác để không nhầm là còn vào được.
+    // Hai kiểu đóng lệnh rất khác nhau nhưng trước đây hiện chung một chữ "LỖ": chạm SL (mất trọn
+    // 1R vì đi sai hướng) và bị cắt sớm theo thời gian (BO_TSTOP 12 nến / PB_TSTOP 24 nến / trần
+    // giữ lệnh — lệnh đứng yên, thường chỉ mất 0,1-0,3R). Suy ra từ GIÁ THOÁT so với SL/TP nên
+    // đọc được cả những lệnh đã đóng từ trước, không cần server ghi thêm trường mới.
+    const exitKind = (s) => {
+      if ((s.status !== 'win' && s.status !== 'loss') || s.exit_price == null) return '';
+      const bull = s.direction === 'bullish';
+      if (bull ? s.exit_price <= s.sl : s.exit_price >= s.sl) return s.trail ? 'chạm trail' : 'chạm SL';
+      if (s.tp != null && (bull ? s.exit_price >= s.tp : s.exit_price <= s.tp)) return 'chạm TP';
+      return 'hết giờ';
+    };
+    const exitTitle = (s) => ({
+      'chạm SL': 'Giá chạm stop loss',
+      'chạm trail': 'Giá chạm stop đã dời theo lãi',
+      'chạm TP': 'Giá chạm take profit',
+      'hết giờ': 'Chưa chạm SL lẫn TP: hết thời gian chờ (lệnh đứng yên quá lâu) nên đóng ở giá đóng nến. '
+        + 'Breakout H4: sau 12 nến chưa lời được 1R. Pullback H4: sau 24 nến chưa lời được 2R.',
+    }[exitKind(s)] || '');
     const statusLabel = (s) => (s.tp_passed ? 'QUÁ TP' : s.drift ? 'TRÔI XA'
-      : ({ win: 'LỜI', loss: 'LỖ', pending: 'CHỜ KHỚP', expired: 'HẾT HẠN' }[s.status] || 'ĐANG MỞ'));
+      : ({ win: 'LỜI', loss: 'LỖ', pending: 'CHỜ KHỚP', expired: 'HẾT HẠN' }[s.status] || 'ĐANG MỞ')
+        + (exitKind(s) ? ' · ' + exitKind(s) : ''));
+    // TP của lệnh BÁN bị chặn bởi giá 0: bán chỉ lãi tối đa 100%, nên RR tối đa = giá vào / khoảng SL.
+    // PB đặt RR 1:10 nên mọi lệnh BÁN có SL rộng hơn 10% giá cho TP ÂM — một mức không bao giờ tồn tại
+    // (SNR RR 1:8 thì ngưỡng là 12,5%). Backtest xử lý y hệt: giá không thể chạm TP âm nên lệnh thoát bằng
+    // cắt-theo-thời-gian hoặc trần giữ lệnh. Vì vậy KHÔNG đổi logic tín hiệu, chỉ sửa hiển thị cho đúng sự thật.
+    const tpOk = (s) => s.tp != null && s.tp > 0;
+    const maxRR = (s) => (s.entry && s.sl && s.entry !== s.sl ? s.entry / Math.abs(s.entry - s.sl) : null);
+    const tpNote = (s) => (tpOk(s) ? '' :
+      `TP theo RR 1:${s.rr} rơi xuống ${fmtPrice(s.tp)} — dưới 0, không tồn tại. Lệnh bán lãi tối đa 100% (giá về 0) nên `
+      + `RR trần của lệnh này là 1:${(maxRR(s) ?? 0).toFixed(1)}. Lệnh vẫn chạy đúng như backtest: không có TP, thoát bằng `
+      + `cắt theo thời gian hoặc trần giữ lệnh.`);
     const tradeR = (s) => (s.r != null ? s.r : s.status === 'win' ? s.rr : -1);
     const fmtR = (s) => { const r = tradeR(s); return (r > 0 ? '+' : '') + (Math.round(r * 10) / 10); };
+    // Tổng R phải nhân CỠ LỆNH (risk_w) của từng hệ, nếu không thì số trong app mô tả một cách đánh
+    // khác với cách đánh thật: lệnh ST ×0,44 mà tính như ×1 sẽ thổi phồng cả lãi lẫn lỗ của ST.
+    // Lệnh cũ không có risk_w (sinh trước 23/09/2026) tính như ×1.
     function calcStats(list) {
       const wins = list.filter((s) => s.status === 'win').length;
       const losses = list.filter((s) => s.status === 'loss').length;
       const n = wins + losses;
-      const totalR = list.reduce((sum, s) => sum + tradeR(s), 0);
+      const totalR = list.reduce((sum, s) => sum + tradeR(s) * (s.risk_w ?? 1), 0);
       return { n, wins, losses, winrate: n ? (wins / n) * 100 : 0, totalR };
     }
     const logStats = computed(() => ({
@@ -751,6 +811,31 @@ createApp({
     // Ép cứng giờ VN (UTC+7) — không dựa vào timezone mặc định của trình duyệt vì có thể bị
     // override (VD: DevTools Sensors) lệch khỏi giờ hệ điều hành thật.
     const TZ = 'Asia/Ho_Chi_Minh';
+    // Giờ ĐỊA PHƯƠNG của ba trung tâm, không neo cứng theo UTC: London và New York đổi giờ mùa hè
+    // lệch nhau tới 3 tuần mỗi năm, neo cứng UTC sẽ sai trong những tuần đó.
+    const SESSIONS = [
+      { name: 'Á', tz: 'Asia/Tokyo', open: 9, close: 18 },
+      { name: 'London', tz: 'Europe/London', open: 8, close: 17 },
+      { name: 'New York', tz: 'America/New_York', open: 8, close: 17 },
+    ];
+    const hhmm = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    const sessions = computed(() => SESSIONS.map((s) => {
+      const p = new Intl.DateTimeFormat('en-GB', { timeZone: s.tz, hour12: false, hour: '2-digit', minute: '2-digit', weekday: 'short' })
+        .formatToParts(new Date(now.value));
+      const get = (t) => p.find((x) => x.type === t).value;
+      const cur = (+get('hour') % 24) * 60 + +get('minute');
+      const o = s.open * 60, c = s.close * 60;
+      const weekend = ['Sat', 'Sun'].includes(get('weekday'));
+      const isOpen = cur >= o && cur < c;
+      const mins = isOpen ? c - cur : cur < o ? o - cur : 1440 - cur + o;
+      // giờ VN tương ứng với lúc phiên mở/đóng, tính từ chính chênh lệch hiện tại
+      const vn = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour12: false, hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(now.value));
+      const vnCur = (+vn.find((x) => x.type === 'hour').value % 24) * 60 + +vn.find((x) => x.type === 'minute').value;
+      const off = ((vnCur - cur) % 1440 + 1440) % 1440;
+      return { ...s, clock: hhmm(cur), isOpen, weekend, mins,
+               range: `${hhmm(o)}–${hhmm(c)} giờ ${s.name}`,
+               vnRange: `${hhmm((o + off) % 1440)}–${hhmm((c + off) % 1440)} giờ VN` };
+    }));
     const fmtClock = (ts) => new Date(ts * 1000).toLocaleTimeString('vi-VN', { hour12: false, timeZone: TZ });
     const fmtDate = (ts) => new Date(ts * 1000).toLocaleString('vi-VN', { hour12: false, timeZone: TZ });
     const timeAgo = (ts) => {
@@ -1112,7 +1197,7 @@ createApp({
       const pct = (p) => (bull ? (p - s.entry) / s.entry : (s.entry - p) / s.entry) * 100;
       const statusText = statusLabel(s);
       const rows = [
-        ...(s.tp ? [{ key: 'tp', price: s.tp, bg: COLORS.up, fg: '#06251b',
+        ...(tpOk(s) ? [{ key: 'tp', price: s.tp, bg: COLORS.up, fg: '#06251b',
           text: `TP ${pct(s.tp) >= 0 ? '+' : ''}${pct(s.tp).toFixed(1)}% · ${fmtPrice(s.tp)}` }] : []),
         { key: 'entry', price: s.entry, bg: COLORS.gold, fg: '#2b2200',
           text: `${s.order === 'limit' ? 'Limit' : 'Entry'} · ${s.trail ? 'Trail ' + s.trail + 'R' : 'RR 1:' + s.rr} · ${statusText}` },
@@ -1157,7 +1242,7 @@ createApp({
         return box;
       };
       const stopBox = mkBox(s.sl, s.sl > s.entry, '246,70,93', COLORS.down);
-      strategyLines = s.tp ? [mkBox(s.tp, s.tp > s.entry, '14,203,129', COLORS.up), stopBox] : [stopBox];
+      strategyLines = tpOk(s) ? [mkBox(s.tp, s.tp > s.entry, '14,203,129', COLORS.up), stopBox] : [stopBox];
 
       // rAF: đợi chart render xong 1 frame rồi mới đọc toạ độ pixel, tránh timeToCoordinate/
       // priceToCoordinate trả về null vì đọc ngay lúc series vừa setData chưa kịp cập nhật layout.
@@ -1378,7 +1463,7 @@ createApp({
       fmtPrice, fmtClock, fmtDate, timeAgo, fmtR, entryTime, heldFor,
       selectSymbol, selectTimeframe, applyCustom, openSignal, sendTest, toggleNotify,
       openScreenerTab,
-      toggleStrategy, openStrategyTab, statusLabel, holdNote, feed, showOrig, feedFilter, feedCoinOnly, feedSources, filteredFeed, loadFeed, notifLog, notifOpen, notifFilter, unreadCount, filteredNotifs, markAllRead, clearNotifs, openNotif, volwatch, loadVolwatch, openVolRow, pnl, openStrategySignal, zoneAlerts, selectedZoneId, openZoneAlert,
+      toggleStrategy, openStrategyTab, statusLabel, exitKind, exitTitle, tabSignals, sessions, tpOk, maxRR, tpNote, holdNote, feed, showOrig, feedFilter, feedCoinOnly, feedSources, filteredFeed, loadFeed, notifLog, notifOpen, notifFilter, unreadCount, filteredNotifs, markAllRead, clearNotifs, openNotif, volwatch, loadVolwatch, openVolRow, pnl, openStrategySignal, zoneAlerts, selectedZoneId, openZoneAlert,
     };
   },
 }).mount('#app');

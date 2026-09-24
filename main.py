@@ -375,7 +375,18 @@ NY_SYSTEMS = ("pb4h", "st4h", "st15")
 #   rổ coin huấn luyện 8.08 -> 8.13, rổ KIỂM ĐỊNH 8.03 (nền 7.73) -> đúng ở cả hai rổ
 #   bootstrap khối 8 tuần x4000: R/năm tốt hơn 99.8% số lần, sụt giảm bền 88.8%
 # Lọc Bollinger của PB (PB_MIN_BBW_PCTL) thì GIỮ: bỏ nó ở cấu hình mới làm lãi/sụt 12.45 -> 9.82.
-SYSTEM_RISK: dict[str, float] = {}
+# CẬP NHẬT 23/09/2026 — quét lại CẢ VECTOR 6 hệ (lần trước chỉ dò trọng số PB nên mới ra "mức đều"):
+# trọng số ước lượng từ 104 tuần TRƯỚC rồi áp cho 13 tuần kế tiếp, lăn chiều (151 tuần ngoài mẫu).
+#   đều (cũ)            R/năm 1090 | sụt -209 | Sharpe 2.23 | p so với trọng số ngẫu nhiên 0.425
+#   nghịch biến động    R/năm 1093 | sụt -130 | Sharpe 2.69 | p 0.014   <- ĐANG DÙNG
+#   tối đa Sharpe       R/năm 1062 | sụt -116 | Sharpe 2.81 | p 0.002   (bỏ: ước lượng 27 tham số từ 104 tuần)
+#   ngang rủi ro 1.93 (thua mức đều) · chỉ hạ riêng ST 2.39 (p 0.176, không đủ)
+# Bền qua CẢ 9 cấu hình walk-forward (78/104/156 tuần × đặt lại 4/13/26 tuần), tốt lên ở CẢ hai nửa
+# thời gian và CẢ hai rổ coin. Co ngót 50% về mức đều làm XẤU đi (2.47) -> dùng nguyên, không co ngót.
+# Quy ra tài khoản (0.25%/lệnh, lãi kép): quý trung vị 41.5% -> 40.8%, nhưng SỤT SÂU NHẤT -42.6% -> -29.7%
+# và tỉ lệ quý có lãi 82% -> 86%. Đo bằng Sharpe, KHÔNG dùng lãi/sụt để chọn (lãi/sụt tự tăng khi giảm số lệnh).
+# ĐẶT LẠI MỖI QUÝ bằng scratchpad/alloc_opt.py (in "trọng số cho kỳ tới"). Chỉ áp cho 6 hệ trong rổ backtest.
+SYSTEM_RISK: dict[str, float] = {"pb4h": 0.62, "bo4h": 1.07, "st4h": 0.44, "st15": 1.21, "vc4h": 1.69, "snr1d": 0.97}
 # Các hệ thống dùng CHUNG một tín hiệu gốc -> không được tính là "đồng thuận" của nhau.
 # st4h và st15 đều là Supertrend flip H4, chỉ khác TP (1:8 vs 1:1.5).
 SAME_SIGNAL = {"st4h": {"st4h", "st15"}, "st15": {"st4h", "st15"}}
