@@ -15,6 +15,23 @@ MODEL = json.loads((Path(__file__).with_name("vol_model.json")).read_text(encodi
 # Hai mô hình gradient boosting (P chạm +15% / chạm -15% trong 24h), học nửa đầu năm + hiệu chỉnh isotonic trên nửa sau (ngoài mẫu). Ngoài mẫu: AUC 0.80 (tăng) / 0.89 (sập), xác suất khớp tần suất thực
 # (vd dự báo ~53% -> thực tế ~49%). Phân biệt tốt coin RỦI RO SẬP cao/thấp; KHÔNG chọn được coin sẽ tăng (lợi nhuận TB 24h ~0 ở mọi nhóm).
 DIR = joblib.load(Path(__file__).with_name("vol_dir_models.joblib"))
+# ── SAU CÚ BƠM: giá thường về đâu trong 48h tới ──────────────────────────────
+# Đo 25/09/2026 trên 4.266 cú bơm, 98 coin, nến 15m, 5 năm (dump_depth.py / dump_volume.py).
+# Nền để so: mốc NGẪU NHIÊN bất kỳ cho đáy 48h trung vị −4,0% và 37% khả năng chạm +5%.
+# Ổn định giữa hai nửa thời gian (bơm ≥30%: −11,2% / −10,0%) và đơn điệu theo cỡ cú bơm.
+# ĐÃ ĐO VÀ KHÔNG DÙNG: volume/OI KHÔNG làm rõ được độ sâu (mọi nhóm đều quanh −8%), nên độ sâu
+# chỉ tra theo CỠ CÚ BƠM. Volume/OI chỉ dùng cho câu hỏi "còn lên tiếp không".
+PUMP_TABLE = [                       # (ngưỡng bơm 24h, đáy p25, đáy trung vị, đỉnh trung vị, % chạm +5%)
+    (0.50, -21.3, -14.3, +16.3, 84),
+    (0.30, -16.6, -10.6, +12.6, 75),
+    (0.20, -13.3, -8.7, +8.2, 64),
+]
+# Nhịp volume + thay đổi OI chia nhóm "tiền mới vào" và "hết hơi". Đo trên nhóm bơm ≥20% (nền nhóm này là 64%):
+#   nhịp cao + OI tăng >5%: 70% còn chạm +5% (hai nửa 71/69), đỉnh trung vị +10,5%  -> lệch +6 điểm
+#   nhịp thấp + OI không tăng: 50% (hai nửa 58/44), đỉnh trung vị +4,9%             -> lệch -14 điểm
+# Áp LỆCH vào nền của từng nhóm cỡ bơm, KHÔNG thay thế: bơm ≥50% có nền 84% nên "tiền mới vào" phải là 90%,
+# chứ ghi đè 70% sẽ thấp hơn cả nền — sai hướng.
+PUMP_FLOW = {"moi": +6, "het_hoi": -14}
 MIN_QUOTE_VOL = 1_000_000
 TOP_N = 20
 LABELS = {  # (nhãn khi đặc trưng CAO, nhãn khi THẤP)
@@ -25,6 +42,29 @@ LABELS = {  # (nhãn khi đặc trưng CAO, nhãn khi THẤP)
     "size_r": ("lệnh lớn hơn thường", "lệnh nhỏ hơn thường"), "volr": ("biến động 24h tăng", "biến động 24h giảm"), "liq": ("thanh khoản lớn", "thanh khoản nhỏ"),
     "fund": ("funding dương", "funding âm"), "fund3": ("funding dương", "funding âm"), "tbr_d": ("mua chủ động tăng", "mua chủ động giảm"),
 }
+
+
+def pump_outlook(price: float, r24: float, kl: pd.DataFrame, doi: float | None) -> dict | None:
+    """Thống kê điều kiện cho coin vừa bơm ≥20% trong 24h. KHÔNG phải tín hiệu vào lệnh —
+    chỉ là phân phối đã đo của 48h tiếp theo, nêu cả hai chiều để không đọc thành 'chắc chắn sập'."""
+    row = next((x for x in PUMP_TABLE if r24 >= x[0]), None)
+    if row is None or len(kl) < 30:
+        return None
+    thr, p25, med, up_med, p_base = row
+    v = kl["qv"].to_numpy()[-24:]
+    nhip = v[-6:].sum() / (v[:-6].sum() / 3) if v[:-6].sum() > 0 else None      # 6h cuối so với 18h trước
+    kind, p_up = None, p_base
+    if nhip is not None and doi is not None:
+        if nhip > 1.5 and doi > 0.05:
+            kind = "moi"
+        elif nhip <= 1.0 and doi <= 0.05:
+            kind = "het_hoi"
+        if kind:
+            p_up = int(min(95, max(30, p_base + PUMP_FLOW[kind])))
+    return dict(thr=int(thr * 100), day_tv=round(price * (1 + med / 100), 8), day_p25=round(price * (1 + p25 / 100), 8),
+                dinh_tv=round(price * (1 + up_med / 100), 8), pct_tv=med, pct_p25=p25, pct_dinh=up_med,
+                p_len=p_up, nhip=round(nhip, 2) if nhip else None, doi=round(doi * 100, 1) if doi is not None else None,
+                kind=kind)
 
 
 def _features(kl: pd.DataFrame, d1: pd.DataFrame, fund: float, age_days: float, btc: tuple = (np.nan, np.nan)) -> dict | None:
@@ -112,13 +152,24 @@ async def scan(ex, log) -> dict:
         if not f:
             return
         p, b, why = score(f)
+        # Chỉ gọi thêm API open interest cho coin vừa bơm ≥20% (thường chỉ vài mã mỗi lượt quét)
+        po = None
+        if f["r24"] >= 0.20:
+            doi = None
+            try:
+                oi = await ex.fapiDataGetOpenInterestHist({"symbol": sym, "period": "1h", "limit": 25})
+                if len(oi) >= 25 and float(oi[0]["sumOpenInterest"]) > 0:
+                    doi = float(oi[-1]["sumOpenInterest"]) / float(oi[0]["sumOpenInterest"]) - 1
+            except Exception:
+                pass
+            po = pump_outlook(f["price"], f["r24"], kl, doi)
         xv = pd.DataFrame([[f.get(k, np.nan) for k in DIR["feats"]]], columns=DIR["feats"]).astype(float)
         pu = float(DIR["cal"]["up"].predict([DIR["models"]["up"].predict_proba(xv)[0, 1]])[0])
         pd_ = float(DIR["cal"]["dn"].predict([DIR["models"]["dn"].predict_proba(xv)[0, 1]])[0])
         rows.append(dict(p_up=round(pu * 100, 1), p_dn=round(pd_ * 100, 1), big=round((pu + pd_) * 100, 1),symbol=sym, price=f["price"], chg24=round(f["r24"] * 100, 2), chg7=round(f["r7"] * 100, 1),
                          p_pump=round(MODEL["cal_pump"][b] * 100, 1), p_dump=round(MODEL["cal_dump"][b] * 100, 1), score=round(p * 100, 2),
                          vol24=round(10 ** f["liq"]), vr3=round(f["vr3_30"], 2) if np.isfinite(f["vr3_30"]) else None,
-                         rng7=round(f["rng7"] * 100, 1), fund=round(f["fund"] * 100, 4), age=round(age), why=why))
+                         rng7=round(f["rng7"] * 100, 1), fund=round(f["fund"] * 100, 4), age=round(age), why=why, pump=po))
     await asyncio.gather(*(one(s, a) for s, a in cands))
     rows.sort(key=lambda r: -r["big"])
     log.info("Volwatch: chấm %d/%d coin trong %.0fs, top %s", len(rows), len(cands), time.time() - t0, rows[0]["symbol"] if rows else "-")
